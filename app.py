@@ -13,44 +13,45 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SPREADSHEET_NAME = "Leads"
 
 # Fetch businesses from Google Places API
-def get_businesses(industries, location):
+def get_businesses(industries, locations):
     businesses = []
     
-    for industry in industries:
-        url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={industry}+in+{location}+Northern+Ireland&key={GOOGLE_API_KEY}"
-        response = requests.get(url)
-        data = response.json()
+    for location in locations:
+        for industry in industries:
+            url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={industry}+in+{location}+Northern+Ireland&key={GOOGLE_API_KEY}"
+            response = requests.get(url)
+            data = response.json()
 
-        # Debugging: Print API response
-        print("\n🔍 DEBUG: API Request URL:", url)
-        print("🔍 DEBUG: API Response:", json.dumps(data, indent=2))
+            # Debugging: Print API response
+            print("\n🔍 DEBUG: API Request URL:", url)
+            print("🔍 DEBUG: API Response:", json.dumps(data, indent=2))
 
-        if "results" in data and len(data["results"]) > 0:
-            for place in data["results"]:
-                details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place['place_id']}&key={GOOGLE_API_KEY}"
-                details_response = requests.get(details_url).json()
-                details = details_response.get("result", {})
+            if "results" in data and len(data["results"]) > 0:
+                for place in data["results"]:
+                    details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place['place_id']}&key={GOOGLE_API_KEY}"
+                    details_response = requests.get(details_url).json()
+                    details = details_response.get("result", {})
 
-                website = details.get("website", "N/A")
-                facebook, instagram, twitter, linkedin, tiktok = extract_social_media_links(website)
+                    website = details.get("website", "N/A")
+                    facebook, instagram, twitter, linkedin, tiktok = extract_social_media_links(website)
 
-                businesses.append({
-                    "name": place.get("name", "N/A"),
-                    "address": place.get("formatted_address", "N/A"),
-                    "google_maps_url": f"https://www.google.com/maps/place/?q=place_id:{place.get('place_id', '')}",
-                    "business_type": industry,
-                    "rating": place.get("rating", "N/A"),
-                    "phone_number": details.get("formatted_phone_number", "N/A"),
-                    "website": website,
-                    "facebook": facebook,
-                    "instagram": instagram,
-                    "twitter": twitter,
-                    "linkedin": linkedin,
-                    "tiktok": tiktok,
-                    "opening_hours": ", ".join(details.get("opening_hours", {}).get("weekday_text", []))
-                })
-        else:
-            print(f"⚠️ WARNING: No businesses found for '{industry}' in '{location}'.")
+                    businesses.append({
+                        "name": place.get("name", "N/A"),
+                        "address": place.get("formatted_address", "N/A"),
+                        "google_maps_url": f"https://www.google.com/maps/place/?q=place_id:{place.get('place_id', '')}",
+                        "business_type": industry,
+                        "rating": place.get("rating", "N/A"),
+                        "phone_number": details.get("formatted_phone_number", "N/A"),
+                        "website": website,
+                        "facebook": facebook,
+                        "instagram": instagram,
+                        "twitter": twitter,
+                        "linkedin": linkedin,
+                        "tiktok": tiktok,
+                        "opening_hours": ", ".join(details.get("opening_hours", {}).get("weekday_text", []))
+                    })
+            else:
+                print(f"⚠️ WARNING: No businesses found for '{industry}' in '{location}'.")
 
     return businesses
 
@@ -174,17 +175,17 @@ st.title("Business Finder for Notion CRM")
 
 selected_category = st.selectbox("Select Industry Category", list(industry_categories.keys()))
 selected_industries = st.multiselect("Select Industries", industry_categories[selected_category])
-location = st.selectbox("Select Location", northern_ireland_cities)
+selected_locations = st.multiselect("Select Locations", northern_ireland_cities)
 assigned_to = st.selectbox("Assign to Team Member", team_members)
 
 if st.button("Find Businesses"):
     with st.spinner("Fetching businesses..."):
-        businesses = get_businesses(selected_industries, location)
+        all_businesses = get_businesses(selected_industries, selected_locations)
 
-        if businesses:
+        if all_businesses:
             sheet = connect_to_google_sheets()
-            for business in businesses:
+            for business in all_businesses:
                 sheet.append_row(list(business.values()) + [assigned_to])
-                st.success(f"Added {business['name']} to Google Sheets ✅")
+                st.success(f"Added {business['name']} ({business['address']}) to Google Sheets ✅")
         else:
             st.error("No businesses found. Try another location or industry.")
