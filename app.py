@@ -4,6 +4,7 @@ import json
 import os
 import re
 import gspread
+import time
 from google.oauth2.credentials import Credentials
 from dotenv import load_dotenv
 
@@ -11,6 +12,18 @@ from dotenv import load_dotenv
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SPREADSHEET_NAME = "Leads"
+
+def safe_append(sheet, row_data, retries=3):
+    """Attempts to append a row with retries in case of an API error."""
+    for attempt in range(retries):
+        try:
+            sheet.append_row(row_data)
+            return True
+        except gspread.exceptions.APIError as e:
+            print(f"API Error: {e}. Retrying ({attempt+1}/{retries})...")
+            time.sleep(2)  # Wait before retrying
+    print("❌ Failed to append row after multiple attempts.")
+    return False
 
 # Fetch businesses from Google Places API
 def get_businesses(industries, locations):
@@ -184,8 +197,19 @@ if st.button("Find Businesses"):
 
         if all_businesses:
             sheet = connect_to_google_sheets()
+
+            # ✅ Loop through businesses with error handling and delay
             for business in all_businesses:
-                sheet.append_row(list(business.values()) + [assigned_to])
-                st.success(f"Added {business['name']} ({business['address']}) to Google Sheets ✅")
+                row_data = list(business.values()) + [assigned_to]
+                
+                # Use safe_append function to prevent API errors
+                success = safe_append(sheet, row_data)
+
+                if success:
+                    st.success(f"✅ Added {business['name']} ({business['address']}) to Google Sheets")
+                else:
+                    st.error(f"❌ Failed to add {business['name']} ({business['address']}). Check logs.")
+
+                time.sleep(1)  # ✅ Prevent API rate limit issues
         else:
             st.error("No businesses found. Try another location or industry.")
