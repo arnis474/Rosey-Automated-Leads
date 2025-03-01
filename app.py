@@ -475,10 +475,11 @@ with tab1:
                     import pandas as pd
                     df = pd.DataFrame(all_businesses)
                     
-                    # Show preview table
+                    # Show preview table with all columns
                     st.subheader("Business Preview")
-                    st.dataframe(df[["name", "address", "phone_number", "rating", "business_type"]])
-                    
+                    st.dataframe(df)  # Displays full preview instead of selected columns
+
+                    # Button to save businesses to Google Sheets
                     if st.button("Save All to Google Sheets"):
                         with st.spinner("Saving businesses to Google Sheets..."):
                             try:
@@ -509,7 +510,7 @@ with tab1:
                                         else:
                                             failures.append(business_name)
                                 else:
-                                    # FIX #7: Alert user when stqdm is not installed
+                                    # Alert user when stqdm is not installed
                                     st.warning("For better performance, install stqdm: pip install stqdm")
                                     st.info("Falling back to standard method...")
                                     
@@ -545,7 +546,7 @@ with tab1:
                                 if success_count > 0:
                                     st.balloons()
                                     st.success(f"Successfully added {success_count} businesses to your CRM!")
-                            
+
                             except Exception as e:
                                 st.error(f"An error occurred while saving to Google Sheets: {str(e)}")
                                 logger.error(f"Error while saving to Google Sheets: {str(e)}")
