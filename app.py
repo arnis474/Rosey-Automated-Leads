@@ -203,7 +203,7 @@ def extract_social_media(website_url):
 
 # Authenticate and connect to Google Sheets using OAuth
 def connect_to_google_sheets():
-    # FIX #4: Check if we already have a connection in session state
+    # Check if we already have a connection in session state
     if st.session_state.sheets_connection is not None:
         logger.info("Using existing Google Sheets connection from session state")
         return st.session_state.sheets_connection
@@ -239,24 +239,36 @@ def connect_to_google_sheets():
             2. Running the authentication script again to generate a new token
             """)
             st.stop()
-                
+        
+        # Authenticate with Google Sheets
         client = gspread.authorize(creds)
+        
         try:
-            # Check if spreadsheet exists
-            try:
-                sheet = client.open(SPREADSHEET_NAME).sheet1
-                logger.info(f"Successfully connected to Google Sheet: {SPREADSHEET_NAME}")
-                # FIX #4: Store in session state for reuse
-                st.session_state.sheets_connection = sheet
-                return sheet
-            except gspread.exceptions.SpreadsheetNotFound:
-                logger.error(f"Spreadsheet '{SPREADSHEET_NAME}' not found")
-                st.error(f"Spreadsheet '{SPREADSHEET_NAME}' not found. Please check your .env configuration or create a spreadsheet with this name.")
-                st.stop()
+            # Explicitly open the "Leads" spreadsheet and select the "Leads" tab
+            spreadsheet = client.open(SPREADSHEET_NAME)  # Open the spreadsheet
+            sheet = spreadsheet.worksheet("Leads")  # Open the specific sheet tab
+            
+            logger.info(f"Successfully connected to Google Sheet: {SPREADSHEET_NAME}, Tab: Leads")
+            
+            # Store in session state for reuse
+            st.session_state.sheets_connection = sheet
+            return sheet
+        
+        except gspread.exceptions.WorksheetNotFound:
+            logger.error(f"Worksheet 'Leads' not found in spreadsheet '{SPREADSHEET_NAME}'.")
+            st.error(f"Worksheet 'Leads' not found in spreadsheet '{SPREADSHEET_NAME}'. Please create a tab named 'Leads'.")
+            st.stop()
+        
+        except gspread.exceptions.SpreadsheetNotFound:
+            logger.error(f"Spreadsheet '{SPREADSHEET_NAME}' not found")
+            st.error(f"Spreadsheet '{SPREADSHEET_NAME}' not found. Please check your .env configuration or create a spreadsheet with this name.")
+            st.stop()
+        
         except gspread.exceptions.APIError as e:
             logger.error(f"Google Sheets API Error: {str(e)}")
             st.error(f"Google Sheets API Error: {str(e)}")
             st.stop()
+
     except Exception as e:
         logger.error(f"Error connecting to Google Sheets: {str(e)}")
         st.error(f"Error connecting to Google Sheets: {str(e)}")
