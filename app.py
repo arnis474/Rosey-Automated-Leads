@@ -480,78 +480,78 @@ with tab1:
                     st.dataframe(df)  # Displays full preview instead of selected columns
 
                     # Button to save businesses to Google Sheets
-                    if st.button("Save All to Google Sheets"):
-                        with st.spinner("Saving businesses to Google Sheets..."):
-                            try:
-                                # Connect to Google Sheets with improved error handling and caching
-                                sheet = connect_to_google_sheets()
-                                
-                                # Use stqdm for progress tracking without freezing the UI if available
-                                success_count = 0
-                                failures = []
-                                
-                                # Create status text placeholder
-                                status_text = st.empty()
-                                
-                                if HAVE_STQDM:
-                                    # Use stqdm for non-blocking progress tracking
-                                    for business in stqdm(all_businesses, desc="Saving to Google Sheets"):
-                                        business_name = business['name']
-                                        row_data = list(business.values()) + [assigned_to]
-                                        
-                                        # Update status text
-                                        status_text.text(f"Processing: {business_name}")
-                                        
-                                        # Use safe_append function with detailed logging
-                                        success = safe_append(sheet, row_data, business_name)
-                                        
-                                        if success:
-                                            success_count += 1
-                                        else:
-                                            failures.append(business_name)
-                                else:
-                                    # Alert user when stqdm is not installed
-                                    st.warning("For better performance, install stqdm: pip install stqdm")
-                                    st.info("Falling back to standard method...")
-                                    
-                                    # Create a progress bar
-                                    progress_bar = st.progress(0)
-                                    
-                                    # Loop through businesses with error handling
-                                    for i, business in enumerate(all_businesses):
-                                        business_name = business['name']
-                                        row_data = list(business.values()) + [assigned_to]
-                                        
-                                        # Update progress
-                                        progress = (i + 1) / len(all_businesses)
-                                        progress_bar.progress(progress)
-                                        status_text.text(f"Processing: {i+1}/{len(all_businesses)} - {business_name}")
-                                        
-                                        # Use safe_append function with detailed logging
-                                        success = safe_append(sheet, row_data, business_name)
-                                        
-                                        if success:
-                                            success_count += 1
-                                        else:
-                                            failures.append(business_name)
-                                
-                                # Final status update
-                                if failures:
-                                    status_text.text(f"Completed with some failures. Added {success_count} of {len(all_businesses)} businesses.")
-                                    st.error(f"Failed to add these businesses: {', '.join(failures[:5])}{' and more...' if len(failures) > 5 else ''}")
-                                    logger.error(f"Failed to add these businesses: {failures}")
-                                else:
-                                    status_text.text(f"Completed! Successfully added all {success_count} businesses.")
-                                
-                                if success_count > 0:
-                                    st.balloons()
-                                    st.success(f"Successfully added {success_count} businesses to your CRM!")
+if st.button("Save All to Google Sheets"):
+    st.write("📌 Button clicked - attempting to save businesses to Google Sheets.")  # Debug message
 
-                            except Exception as e:
-                                st.error(f"An error occurred while saving to Google Sheets: {str(e)}")
-                                logger.error(f"Error while saving to Google Sheets: {str(e)}")
-                else:
-                    st.error("No businesses found. Try another location or industry.")
+    with st.spinner("Saving businesses to Google Sheets..."):
+        try:
+            # Connect to Google Sheets
+            sheet = connect_to_google_sheets()
+            st.write("✅ Successfully connected to Google Sheets.")  # Debug message
+
+            success_count = 0
+            failures = []
+            status_text = st.empty()
+
+            if HAVE_STQDM:
+                # Use stqdm for non-blocking progress tracking
+                for business in stqdm(all_businesses, desc="Saving to Google Sheets"):
+                    business_name = business["name"]
+                    row_data = list(business.values()) + [assigned_to]
+
+                    st.write(f"📍 Attempting to save: {business_name}")  # Debug message
+
+                    # Use safe_append function with detailed logging
+                    success = safe_append(sheet, row_data, business_name)
+
+                    if success:
+                        success_count += 1
+                    else:
+                        failures.append(business_name)
+
+            else:
+                # Alert user when stqdm is not installed
+                st.warning("For better performance, install stqdm: pip install stqdm")
+                st.info("Falling back to standard method...")
+
+                # Create a progress bar
+                progress_bar = st.progress(0)
+
+                # Loop through businesses with error handling
+                for i, business in enumerate(all_businesses):
+                    business_name = business["name"]
+                    row_data = list(business.values()) + [assigned_to]
+
+                    # Update progress
+                    progress = (i + 1) / len(all_businesses)
+                    progress_bar.progress(progress)
+                    status_text.text(f"Processing: {i+1}/{len(all_businesses)} - {business_name}")
+
+                    # Use safe_append function with detailed logging
+                    st.write(f"📍 Attempting to save: {business_name}")  # Debug message
+                    success = safe_append(sheet, row_data, business_name)
+
+                    if success:
+                        success_count += 1
+                    else:
+                        failures.append(business_name)
+
+            # Final status update
+            if failures:
+                status_text.text(f"❌ Completed with some failures. Added {success_count} of {len(all_businesses)} businesses.")
+                st.error(f"❌ Failed to add these businesses: {', '.join(failures[:5])}{' and more...' if len(failures) > 5 else ''}")
+                logger.error(f"Failed to add these businesses: {failures}")
+            else:
+                status_text.text(f"✅ Completed! Successfully added all {success_count} businesses.")
+                st.balloons()
+                st.success(f"✅ Successfully added {success_count} businesses to your CRM!")
+
+        except Exception as e:
+            st.error(f"⚠️ An error occurred while saving to Google Sheets: {str(e)}")
+            logger.error(f"Error while saving to Google Sheets: {str(e)}")
+else:
+    st.error("⚠️ No businesses found. Try another location or industry.")
+
 
 # FIX #5 & #6: Dedicated tab for failed jobs
 with tab2:
