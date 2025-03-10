@@ -480,135 +480,135 @@ with tab1:
                     st.dataframe(df)  # Displays full preview instead of selected columns
 
                     # Button to save businesses to Google Sheets
-if st.button("Save All to Google Sheets"):
-    st.write("📌 Button clicked - attempting to save businesses to Google Sheets.")  # Debug message
+                    if st.button("Save All to Google Sheets"):
+                        st.write("📌 Button clicked - attempting to save businesses to Google Sheets.")  # Debug message
 
-    with st.spinner("Saving businesses to Google Sheets..."):
-        try:
-            # Connect to Google Sheets
-            sheet = connect_to_google_sheets()
-            st.write("✅ Successfully connected to Google Sheets.")  # Debug message
+                        with st.spinner("Saving businesses to Google Sheets..."):
+                            try:
+                                # Connect to Google Sheets
+                                sheet = connect_to_google_sheets()
+                                st.write("✅ Successfully connected to Google Sheets.")  # Debug message
 
-            success_count = 0
-            failures = []
-            status_text = st.empty()
+                                success_count = 0
+                                failures = []
+                                status_text = st.empty()
 
-            if HAVE_STQDM:
-                # Use stqdm for non-blocking progress tracking
-                for business in stqdm(all_businesses, desc="Saving to Google Sheets"):
-                    business_name = business["name"]
-                    row_data = list(business.values()) + [assigned_to]
+                                if HAVE_STQDM:
+                                    # Use stqdm for non-blocking progress tracking
+                                    for business in stqdm(all_businesses, desc="Saving to Google Sheets"):
+                                        business_name = business["name"]
+                                        row_data = list(business.values()) + [assigned_to]
 
-                    st.write(f"📍 Attempting to save: {business_name}")  # Debug message
+                                        st.write(f"📍 Attempting to save: {business_name}")  # Debug message
 
-                    # Use safe_append function with detailed logging
-                    success = safe_append(sheet, row_data, business_name)
+                                        # Use safe_append function with detailed logging
+                                        success = safe_append(sheet, row_data, business_name)
 
-                    if success:
-                        success_count += 1
+                                        if success:
+                                            success_count += 1
+                                        else:
+                                            failures.append(business_name)
+
+                                else:
+                                    # Alert user when stqdm is not installed
+                                    st.warning("For better performance, install stqdm: pip install stqdm")
+                                    st.info("Falling back to standard method...")
+
+                                    # Create a progress bar
+                                    progress_bar = st.progress(0)
+
+                                    # Loop through businesses with error handling
+                                    for i, business in enumerate(all_businesses):
+                                        business_name = business["name"]
+                                        row_data = list(business.values()) + [assigned_to]
+
+                                        # Update progress
+                                        progress = (i + 1) / len(all_businesses)
+                                        progress_bar.progress(progress)
+                                        status_text.text(f"Processing: {i+1}/{len(all_businesses)} - {business_name}")
+
+                                        # Use safe_append function with detailed logging
+                                        st.write(f"📍 Attempting to save: {business_name}")  # Debug message
+                                        success = safe_append(sheet, row_data, business_name)
+
+                                        if success:
+                                            success_count += 1
+                                        else:
+                                            failures.append(business_name)
+
+                                # Final status update
+                                if failures:
+                                    status_text.text(f"❌ Completed with some failures. Added {success_count} of {len(all_businesses)} businesses.")
+                                    st.error(f"❌ Failed to add these businesses: {', '.join(failures[:5])}{' and more...' if len(failures) > 5 else ''}")
+                                    logger.error(f"Failed to add these businesses: {failures}")
+                                else:
+                                    status_text.text(f"✅ Completed! Successfully added all {success_count} businesses.")
+                                    st.balloons()
+                                    st.success(f"✅ Successfully added {success_count} businesses to your CRM!")
+
+                            except Exception as e:
+                                st.error(f"⚠️ An error occurred while saving to Google Sheets: {str(e)}")
+                                logger.error(f"Error while saving to Google Sheets: {str(e)}")
                     else:
-                        failures.append(business_name)
-
-            else:
-                # Alert user when stqdm is not installed
-                st.warning("For better performance, install stqdm: pip install stqdm")
-                st.info("Falling back to standard method...")
-
-                # Create a progress bar
-                progress_bar = st.progress(0)
-
-                # Loop through businesses with error handling
-                for i, business in enumerate(all_businesses):
-                    business_name = business["name"]
-                    row_data = list(business.values()) + [assigned_to]
-
-                    # Update progress
-                    progress = (i + 1) / len(all_businesses)
-                    progress_bar.progress(progress)
-                    status_text.text(f"Processing: {i+1}/{len(all_businesses)} - {business_name}")
-
-                    # Use safe_append function with detailed logging
-                    st.write(f"📍 Attempting to save: {business_name}")  # Debug message
-                    success = safe_append(sheet, row_data, business_name)
-
-                    if success:
-                        success_count += 1
-                    else:
-                        failures.append(business_name)
-
-            # Final status update
-            if failures:
-                status_text.text(f"❌ Completed with some failures. Added {success_count} of {len(all_businesses)} businesses.")
-                st.error(f"❌ Failed to add these businesses: {', '.join(failures[:5])}{' and more...' if len(failures) > 5 else ''}")
-                logger.error(f"Failed to add these businesses: {failures}")
-            else:
-                status_text.text(f"✅ Completed! Successfully added all {success_count} businesses.")
-                st.balloons()
-                st.success(f"✅ Successfully added {success_count} businesses to your CRM!")
-
-        except Exception as e:
-            st.error(f"⚠️ An error occurred while saving to Google Sheets: {str(e)}")
-            logger.error(f"Error while saving to Google Sheets: {str(e)}")
-else:
-    st.error("⚠️ No businesses found. Try another location or industry.")
+                        st.error("⚠️ No businesses found. Try another location or industry.")
 
 
-# FIX #5 & #6: Dedicated tab for failed jobs
-with tab2:
-    st.subheader("Failed Jobs")
-    
-    if st.session_state.failed_rows:
-        st.warning(f"There are {len(st.session_state.failed_rows)} failed business entries that weren't saved to Google Sheets.")
-        
-        # Display the first few failed businesses
-        if len(st.session_state.failed_rows) > 0:
-            st.write("Failed businesses:")
-            for i, (_, business_name) in enumerate(st.session_state.failed_rows[:5]):
-                st.write(f"{i+1}. {business_name}")
-            
-            if len(st.session_state.failed_rows) > 5:
-                st.write(f"... and {len(st.session_state.failed_rows) - 5} more.")
-            
-            if st.button("Retry Failed Jobs"):
-                retry_failed_rows()
-    else:
-        st.success("No failed jobs to display.")
+                    # FIX #5 & #6: Dedicated tab for failed jobs
+                    with tab2:
+                        st.subheader("Failed Jobs")
+                        
+                        if st.session_state.failed_rows:
+                            st.warning(f"There are {len(st.session_state.failed_rows)} failed business entries that weren't saved to Google Sheets.")
+                            
+                            # Display the first few failed businesses
+                            if len(st.session_state.failed_rows) > 0:
+                                st.write("Failed businesses:")
+                                for i, (_, business_name) in enumerate(st.session_state.failed_rows[:5]):
+                                    st.write(f"{i+1}. {business_name}")
+                                
+                                if len(st.session_state.failed_rows) > 5:
+                                    st.write(f"... and {len(st.session_state.failed_rows) - 5} more.")
+                                
+                                if st.button("Retry Failed Jobs"):
+                                    retry_failed_rows()
+                        else:
+                            st.success("No failed jobs to display.")
 
-with tab3:
-    st.subheader("App Settings")
-    
-    # Display current settings
-    st.write("Current Settings:")
-    st.write(f"- Google API Key: {'Configured' if GOOGLE_API_KEY else 'Not Configured'}")
-    st.write(f"- Spreadsheet Name: {SPREADSHEET_NAME}")
-    st.write(f"- Progress Tracking: {'Using stqdm (recommended)' if HAVE_STQDM else 'Using standard progress (consider installing stqdm)'}")
-    
-    # Instructions for setup
-    st.subheader("Setup Instructions")
-    st.write("""
-    1. Create a .env file in the same directory as this app with the following:
-       ```
-       GOOGLE_API_KEY=your_google_api_key
-       SPREADSHEET_NAME=Leads
-       ```
-    2. Make sure you have a Google OAuth token.json file for Sheet access
-    3. Install required packages: `pip install streamlit requests gspread google-auth python-dotenv beautifulsoup4 stqdm`
-    """)
-    
-    # Team members management
-    st.subheader("Team Members")
-    new_member = st.text_input("Add Team Member")
-    if st.button("Add") and new_member:
-        team_members.append(new_member)
-        st.success(f"Added {new_member} to team members list!")
-    
-    # FIX #10: Add confirmation step before clearing session state
-    if st.button("Clear Session State (Reset App)"):
-        confirm = st.checkbox("I understand this will reset all app data", value=False)
-        if confirm and st.button("Confirm Reset"):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.success("Session state cleared! Refreshing...")
-            st.experimental_rerun()
-        elif not confirm:
-            st.warning("Please confirm that you want to reset the app data")
+                    with tab3:
+                        st.subheader("App Settings")
+                        
+                        # Display current settings
+                        st.write("Current Settings:")
+                        st.write(f"- Google API Key: {'Configured' if GOOGLE_API_KEY else 'Not Configured'}")
+                        st.write(f"- Spreadsheet Name: {SPREADSHEET_NAME}")
+                        st.write(f"- Progress Tracking: {'Using stqdm (recommended)' if HAVE_STQDM else 'Using standard progress (consider installing stqdm)'}")
+                        
+                        # Instructions for setup
+                        st.subheader("Setup Instructions")
+                        st.write("""
+                        1. Create a .env file in the same directory as this app with the following:
+                           ```
+                           GOOGLE_API_KEY=your_google_api_key
+                           SPREADSHEET_NAME=Leads
+                           ```
+                        2. Make sure you have a Google OAuth token.json file for Sheet access
+                        3. Install required packages: `pip install streamlit requests gspread google-auth python-dotenv beautifulsoup4 stqdm`
+                        """)
+                        
+                        # Team members management
+                        st.subheader("Team Members")
+                        new_member = st.text_input("Add Team Member")
+                        if st.button("Add") and new_member:
+                            team_members.append(new_member)
+                            st.success(f"Added {new_member} to team members list!")
+                        
+                        # FIX #10: Add confirmation step before clearing session state
+                        if st.button("Clear Session State (Reset App)"):
+                            confirm = st.checkbox("I understand this will reset all app data", value=False)
+                            if confirm and st.button("Confirm Reset"):
+                                for key in list(st.session_state.keys()):
+                                    del st.session_state[key]
+                                st.success("Session state cleared! Refreshing...")
+                                st.experimental_rerun()
+                            elif not confirm:
+                                st.warning("Please confirm that you want to reset the app data")
