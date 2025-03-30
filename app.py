@@ -633,7 +633,7 @@ with tab1:
                     st.subheader("Business Preview")
                     st.dataframe(df)  # Displays full preview instead of selected columns
 
-                                        # Button to save businesses to Google Sheets
+                    # Button to save businesses to Google Sheets
                     if st.button("Save All to Google Sheets"):
                         st.info("Preparing to save businesses to Google Sheets. Please wait...")
                         
@@ -711,62 +711,61 @@ with tab1:
                                 st.error(f"⚠️ An error occurred while saving to Google Sheets: {str(e)}")
                                 logger.error(f"Error while saving to Google Sheets: {str(e)}")
 
-                    # FIX #5 & #6: Dedicated tab for failed jobs
-                    with tab2:
-                        st.subheader("Failed Jobs")
-                        
-                        if st.session_state.failed_rows:
-                            st.warning(f"There are {len(st.session_state.failed_rows)} failed business entries that weren't saved to Google Sheets.")
-                            
-                            # Display the first few failed businesses
-                            if len(st.session_state.failed_rows) > 0:
-                                st.write("Failed businesses:")
-                                for i, (_, business_name) in enumerate(st.session_state.failed_rows[:5]):
-                                    st.write(f"{i+1}. {business_name}")
-                                
-                                if len(st.session_state.failed_rows) > 5:
-                                    st.write(f"... and {len(st.session_state.failed_rows) - 5} more.")
-                                
-                                if st.button("Retry Failed Jobs"):
-                                    retry_failed_rows()
-                        else:
-                            st.success("No failed jobs to display.")
-                    
-                    with tab3:
-                        st.subheader("App Settings")
-                        
-                        # Display current settings
-                        st.write("Current Settings:")
-                        st.write(f"- Google API Key: {'Configured' if GOOGLE_API_KEY else 'Not Configured'}")
-                        st.write(f"- Spreadsheet Name: {SPREADSHEET_NAME}")
-                        st.write(f"- Progress Tracking: {'Using stqdm (recommended)' if HAVE_STQDM else 'Using standard progress (consider installing stqdm)'}")
-                        
-                        # Instructions for setup
-                        st.subheader("Setup Instructions")
-                        st.write("""
-                        1. Create a .env file in the same directory as this app with the following:
-                           ```
-                           GOOGLE_API_KEY=your_google_api_key
-                           SPREADSHEET_NAME=Leads
-                           ```
-                        2. Make sure you have a Google OAuth [token.json](http://_vscodecontentref_/1) file for Sheet access
-                        3. Install required packages: [pip install streamlit requests gspread google-auth python-dotenv beautifulsoup4 stqdm](http://_vscodecontentref_/2)
-                        """)
-                        
-                        # Team members management
-                        st.subheader("Team Members")
-                        new_member = st.text_input("Add Team Member")
-                        if st.button("Add") and new_member:
-                            team_members.append(new_member)
-                            st.success(f"Added {new_member} to team members list!")
-                        
-                        # FIX #10: Add confirmation step before clearing session state
-                        if st.button("Clear Session State (Reset App)"):
-                            confirm = st.checkbox("I understand this will reset all app data", value=False)
-                            if confirm and st.button("Confirm Reset"):
-                                for key in list(st.session_state.keys()):
-                                    del st.session_state[key]
-                                st.success("Session state cleared! Refreshing...")
-                                st.experimental_rerun()
-                            elif not confirm:
-                                st.warning("Please confirm that you want to reset the app data")
+with tab2:
+    st.subheader("Failed Jobs")
+    
+    if st.session_state.failed_rows:
+        st.warning(f"There are {len(st.session_state.failed_rows)} failed business entries that weren't saved to Google Sheets.")
+        
+        # Display the first few failed businesses
+        if len(st.session_state.failed_rows) > 0:
+            st.write("Failed businesses:")
+            for i, (_, business_name) in enumerate(st.session_state.failed_rows[:5]):
+                st.write(f"{i+1}. {business_name}")
+            
+            if len(st.session_state.failed_rows) > 5:
+                st.write(f"... and {len(st.session_state.failed_rows) - 5} more.")
+            
+            if st.button("Retry Failed Jobs"):
+                retry_failed_rows()
+    else:
+        st.success("No failed jobs to display.")
+
+with tab3:
+    st.subheader("App Settings")
+    
+    # Display current settings
+    st.write("Current Settings:")
+    st.write(f"- Google API Key: {'Configured' if GOOGLE_API_KEY else 'Not Configured'}")
+    st.write(f"- Spreadsheet Name: {SPREADSHEET_NAME}")
+    st.write(f"- Progress Tracking: {'Using stqdm (recommended)' if HAVE_STQDM else 'Using standard progress (consider installing stqdm)'}")
+    
+    # Instructions for setup
+    st.subheader("Setup Instructions")
+    st.write("""
+    1. Create a .env file in the same directory as this app with the following:
+       ```
+       GOOGLE_API_KEY=your_google_api_key
+       SPREADSHEET_NAME=Leads
+       ```
+    2. Make sure you have a Google OAuth [`token.json`](token.json ) file for Sheet access
+    3. Install required packages: [`pip install streamlit requests gspread google-auth python-dotenv beautifulsoup4 stqdm`](app.py )
+    """)
+    
+    # Team members management
+    st.subheader("Team Members")
+    new_member = st.text_input("Add Team Member")
+    if st.button("Add") and new_member:
+        team_members.append(new_member)
+        st.success(f"Added {new_member} to team members list!")
+    
+    # FIX #10: Add confirmation step before clearing session state
+    if st.button("Clear Session State (Reset App)"):
+        confirm = st.checkbox("I understand this will reset all app data", value=False)
+        if confirm and st.button("Confirm Reset"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.success("Session state cleared! Refreshing...")
+            st.experimental_rerun()
+        elif not confirm:
+            st.warning("Please confirm that you want to reset the app data")
