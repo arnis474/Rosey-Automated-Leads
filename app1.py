@@ -7,7 +7,6 @@ import gspread
 import time
 import logging
 import urllib.parse
-import random
 from google.oauth2.credentials import Credentials
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -31,54 +30,43 @@ load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Leads")
 
-# FIX #6: Use setdefault to ensure session state variables exist without overwriting them
+# Setup session state for API request tracking to prevent duplicates
+# Initialize as a set for efficient lookups
 if 'processed_businesses' not in st.session_state:
     st.session_state.processed_businesses = set()
 
+# Store Google Sheets connection in session state to avoid repeated authentication
 if 'sheets_connection' not in st.session_state:
     st.session_state.sheets_connection = None
 
+# Store failed rows for potential retry
 if 'failed_rows' not in st.session_state:
     st.session_state.failed_rows = []
 
-def safe_request(url, retries=3, initial_delay=1, max_delay=15):
+def safe_request(url, retries=3, initial_delay=1, max_delay=30):
     """Make a request with exponential backoff retry logic for API errors"""
     for attempt in range(retries):
         try:
             response = requests.get(url, timeout=10)
-            
-            # FIX #2: Better handling of API error status codes
             if response.status_code == 200:
                 return response.json()
             elif response.status_code == 429:  # Rate limit exceeded
                 backoff_delay = min(initial_delay * (2 ** attempt), max_delay)
-                # FIX #3: Add jitter to prevent synchronized retries
-                backoff_delay = backoff_delay * (0.8 + 0.4 * random.random())
-                logger.warning(f"Rate limit exceeded. Backing off for {backoff_delay:.2f} seconds...")
-                time.sleep(backoff_delay)
-            elif response.status_code in [400, 403]:
-                logger.error(f"API request rejected with status {response.status_code}: {response.text}")
-                return None  # Don't retry client errors
-            elif response.status_code >= 500:
-                backoff_delay = min(initial_delay * (2 ** attempt), max_delay)
-                backoff_delay = backoff_delay * (0.8 + 0.4 * random.random())
-                logger.warning(f"Server error {response.status_code}. Retrying in {backoff_delay:.2f} seconds ({attempt+1}/{retries})...")
-                time.sleep(backoff_delay)
+                logger.warning(f"Rate limit exceeded. Backing off for {backoff_delay} seconds...")
+                time.sleep(backoff_delay)  # Exponential backoff with max limit
             else:
                 backoff_delay = min(initial_delay * (2 ** attempt), max_delay)
-                backoff_delay = backoff_delay * (0.8 + 0.4 * random.random())
-                logger.warning(f"Request failed with status {response.status_code}. Retrying in {backoff_delay:.2f} seconds ({attempt+1}/{retries})...")
-                time.sleep(backoff_delay)
+                logger.warning(f"Request failed with status {response.status_code}. Retrying in {backoff_delay} seconds ({attempt+1}/{retries})...")
+                time.sleep(backoff_delay)  # Exponential backoff with max limit
         except requests.exceptions.RequestException as e:
             backoff_delay = min(initial_delay * (2 ** attempt), max_delay)
-            backoff_delay = backoff_delay * (0.8 + 0.4 * random.random())
-            logger.error(f"Request error: {e}. Retrying in {backoff_delay:.2f} seconds ({attempt+1}/{retries})...")
-            time.sleep(backoff_delay)
+            logger.error(f"Request error: {e}. Retrying in {backoff_delay} seconds ({attempt+1}/{retries})...")
+            time.sleep(backoff_delay)  # Exponential backoff with max limit
     
     logger.error(f"Failed to complete request after {retries} attempts.")
-    return None
+    return None  # Return None instead of an error dictionary for clearer error handling
 
-def safe_append(sheet, row_data, business_name, retries=3, initial_delay=1, max_delay=15):
+def safe_append(sheet, row_data, business_name, retries=3, initial_delay=1, max_delay=30):
     """Attempts to append a row with retries in case of an API error."""
     for attempt in range(retries):
         try:
@@ -87,57 +75,22 @@ def safe_append(sheet, row_data, business_name, retries=3, initial_delay=1, max_
             return True
         except gspread.exceptions.APIError as e:
             backoff_delay = min(initial_delay * (2 ** attempt), max_delay)
-            # FIX #3: Add jitter to prevent synchronized retries
-            backoff_delay = backoff_delay * (0.8 + 0.4 * random.random())
             error_details = f"Error type: {type(e).__name__}, Error message: {str(e)}"
-            logger.warning(f"Google Sheets API Error when adding {business_name}. {error_details}. Retrying in {backoff_delay:.2f} seconds ({attempt+1}/{retries})...")
-            time.sleep(backoff_delay)
+            logger.warning(f"Google Sheets API Error when adding {business_name}. {error_details}. Retrying in {backoff_delay} seconds ({attempt+1}/{retries})...")
+            time.sleep(backoff_delay)  # Exponential backoff with max limit
     
     logger.error(f"Failed to add {business_name} to Google Sheets after {retries} attempts.")
     # Store failed row in session state for potential retry
     st.session_state.failed_rows.append((row_data, business_name))
-    
-    # FIX #5: Save failed rows to local file for persistence across app restarts
-    save_failed_rows_to_file()
-    
     return False
 
-# FIX #5: Add functions to save and load failed rows from file
-def save_failed_rows_to_file():
-    """Save failed rows to a local file for persistence"""
-    try:
-        # Convert business names to strings to ensure serializability
-        serializable_rows = []
-        for row_data, business_name in st.session_state.failed_rows:
-            serializable_rows.append((row_data, str(business_name)))
-            
-        with open("failed_rows.json", "w") as f:
-            json.dump(serializable_rows, f)
-        logger.info(f"Saved {len(serializable_rows)} failed rows to file")
-    except Exception as e:
-        logger.error(f"Error saving failed rows to file: {e}")
-
-def load_failed_rows_from_file():
-    """Load failed rows from local file if it exists"""
-    try:
-        if os.path.exists("failed_rows.json"):
-            with open("failed_rows.json", "r") as f:
-                loaded_rows = json.load(f)
-                
-            # Only load if session state is empty to avoid duplicates
-            if not st.session_state.failed_rows:
-                st.session_state.failed_rows = loaded_rows
-                logger.info(f"Loaded {len(loaded_rows)} failed rows from file")
-    except Exception as e:
-        logger.error(f"Error loading failed rows from file: {e}")
-
-# FIX #4: Optimize API calls by requesting more fields in the initial search
+# Fetch businesses from Google Places API
 def get_businesses(industries, locations, region):
     businesses = []
     
-    # FIX #1: Proper API key validation - check for both None and empty string
+    # Validate API key first - FIX #1: Proper API key validation
     if not GOOGLE_API_KEY:
-        st.error("Google API Key not found or empty. Please check your .env file.")
+        st.error("Google API Key not found. Please check your .env file.")
         return []
     
     for location in locations:
@@ -148,19 +101,16 @@ def get_businesses(industries, locations, region):
             
             # URL encode the query parameters
             encoded_query = urllib.parse.quote_plus(f"{industry} in {location} {region}")
-            
-            # FIX #4: Request more fields in the initial API call to reduce need for detail requests
-            fields = "place_id,name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
-            url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}"
+            url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}"
             
             data = safe_request(url)
             
+            # FIX #2: Handle empty API responses more robustly
             if data is None:
                 st.error(f"Error fetching data for {industry} in {location}")
                 continue
-            
-            # FIX #9: Simplify checking for results
-            if data.get("results"):
+                
+            if "results" in data and len(data["results"]) > 0:
                 # Use session state as a set for efficient lookup
                 processed_set = st.session_state.processed_businesses
                 
@@ -173,47 +123,34 @@ def get_businesses(industries, locations, region):
                     # Add to processed set
                     processed_set.add(place_id)
                     
-                    # FIX #4: Only fetch additional details if necessary
-                    # Check if we have all the fields we need from the initial request
-                    if not all(key in place for key in ['formatted_phone_number', 'website']):
-                        # Fetch place details with exponential backoff
-                        details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_address,formatted_phone_number,website,opening_hours,url&key={GOOGLE_API_KEY}"
-                        details_response = safe_request(details_url)
+                    # Fetch place details with exponential backoff
+                    details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_address,formatted_phone_number,website,opening_hours,url&key={GOOGLE_API_KEY}"
+                    details_response = safe_request(details_url)
+                    
+                    # FIX #2: Handle empty API responses more robustly
+                    if details_response is None:
+                        st.error(f"Error fetching details for {place.get('name', 'Unknown')}")
+                        continue
                         
-                        if details_response is None:
-                            st.error(f"Error fetching details for {place.get('name', 'Unknown')}")
-                            # Continue with partial data instead of skipping entirely
-                            details = {}
-                        else:
-                            details = details_response.get("result", {})
-                    else:
-                        details = place
+                    details = details_response.get("result", {})
                     
-                    # Merge data from both sources
-                    combined_data = {**place, **(details or {})}
-                    
-                    website = combined_data.get("website", "N/A")
+                    website = details.get("website", "N/A")
                     social_links = extract_social_media(website)
                     
-                    # Get opening hours safely
-                    opening_hours = ", ".join(
-                        combined_data.get("opening_hours", {}).get("weekday_text", [])
-                    ) if "opening_hours" in combined_data else "N/A"
-                    
                     businesses.append({
-                        "name": combined_data.get("name", "N/A"),
-                        "address": combined_data.get("formatted_address", "N/A"),
-                        "google_maps_url": combined_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"),
+                        "name": place.get("name", "N/A"),
+                        "address": place.get("formatted_address", "N/A"),
+                        "google_maps_url": details.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"),
                         "business_type": industry,
-                        "rating": combined_data.get("rating", "N/A"),
-                        "phone_number": combined_data.get("formatted_phone_number", "N/A"),
+                        "rating": place.get("rating", "N/A"),
+                        "phone_number": details.get("formatted_phone_number", "N/A"),
                         "website": website,
                         "facebook": social_links.get("facebook", "N/A"),
                         "instagram": social_links.get("instagram", "N/A"),
                         "twitter": social_links.get("twitter", "N/A"),
                         "linkedin": social_links.get("linkedin", "N/A"),
                         "tiktok": social_links.get("tiktok", "N/A"),
-                        "opening_hours": opening_hours
+                        "opening_hours": ", ".join(details.get("opening_hours", {}).get("weekday_text", []))
                     })
             else:
                 logger.warning(f"No businesses found for '{industry}' in '{location}'.")
@@ -223,7 +160,7 @@ def get_businesses(industries, locations, region):
 
     return businesses
 
-# FIX #8: Improve social media extraction with better error handling
+# Extract social media links by making a request to the website
 def extract_social_media(website_url):
     social_links = {
         "facebook": "N/A",
@@ -235,32 +172,16 @@ def extract_social_media(website_url):
     
     if not website_url or website_url == "N/A":
         return social_links
-    
-    # Validate URL format to prevent request errors
-    if not website_url.startswith(('http://', 'https://')):
-        website_url = 'https://' + website_url
-    
+        
     try:
-        # Set headers to mimic a browser request to avoid being blocked
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Cache-Control': 'max-age=0'
-        }
-        
-        # Reduced timeout and don't follow redirects to avoid hanging on problematic sites
-        response = requests.get(website_url, timeout=5, headers=headers, allow_redirects=True)
-        
+        response = requests.get(website_url, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # Find links containing social media patterns
             links = soup.find_all('a', href=True)
             
-            # Store only the first valid link for each platform
+            # FIX #9: Store only the first valid link for each platform
             for link in links:
                 href = link['href'].lower()
                 
@@ -275,44 +196,12 @@ def extract_social_media(website_url):
                     social_links["linkedin"] = link['href']
                 elif "tiktok.com" in href and social_links["tiktok"] == "N/A":
                     social_links["tiktok"] = link['href']
-        else:
-            logger.warning(f"Failed to access {website_url}: HTTP status code {response.status_code}")
-    except requests.exceptions.SSLError:
-        # Try with HTTP if HTTPS fails
-        try:
-            http_url = website_url.replace('https://', 'http://')
-            logger.info(f"SSL error with {website_url}, trying HTTP: {http_url}")
-            response = requests.get(http_url, timeout=5)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                # Process links (same code as above)
-                links = soup.find_all('a', href=True)
-                for link in links:
-                    href = link['href'].lower()
-                    if "facebook.com" in href and social_links["facebook"] == "N/A":
-                        social_links["facebook"] = link['href']
-                    elif "instagram.com" in href and social_links["instagram"] == "N/A":
-                        social_links["instagram"] = link['href']
-                    elif ("twitter.com" in href or "x.com" in href) and social_links["twitter"] == "N/A":
-                        social_links["twitter"] = link['href']
-                    elif "linkedin.com" in href and social_links["linkedin"] == "N/A":
-                        social_links["linkedin"] = link['href']
-                    elif "tiktok.com" in href and social_links["tiktok"] == "N/A":
-                        social_links["tiktok"] = link['href']
-        except Exception as e:
-            logger.warning(f"HTTP fallback failed for {website_url}: {e}")
-    except requests.exceptions.ConnectionError:
-        logger.warning(f"Connection error for {website_url}")
-    except requests.exceptions.Timeout:
-        logger.warning(f"Timeout when accessing {website_url}")
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"Error accessing {website_url}: {e}")
     except Exception as e:
-        logger.warning(f"Unexpected error extracting social media from {website_url}: {e}")
+        logger.warning(f"Error extracting social media links from {website_url}: {e}")
     
     return social_links
 
-# FIX #7: Improve Google Sheets authentication handling
+# Authenticate and connect to Google Sheets using OAuth
 def connect_to_google_sheets():
     # Check if we already have a connection in session state
     if st.session_state.sheets_connection is not None:
@@ -322,16 +211,8 @@ def connect_to_google_sheets():
     try:
         # Check if token file exists
         if not os.path.exists("token.json"):
-            st.error("Authentication file (token.json) not found.")
-            # FIX #7: Provide guidance instead of stopping execution
-            st.markdown("""
-            ### Authentication Setup Instructions:
-            1. Run the Google OAuth setup script to generate your token.json file.
-            2. Place the token.json file in the same directory as this app.
-            3. Restart the app after completing these steps.
-            """)
-            # Return None instead of stopping execution
-            return None
+            st.error("Authentication file (token.json) not found. Please follow setup instructions.")
+            st.stop()
             
         creds = Credentials.from_authorized_user_file(
             "token.json", 
@@ -348,30 +229,22 @@ def connect_to_google_sheets():
                 logger.info("Successfully refreshed authentication token.")
             except RefreshError as e:
                 logger.error(f"Failed to refresh authentication token: {e}")
-                st.error("Authentication token has expired and cannot be refreshed.")
-                st.markdown("""
-                ### Re-authentication Instructions:
-                1. Delete the existing token.json file
-                2. Run the authentication script again to generate a new token
-                3. Restart the app after completing these steps
-                """)
-                return None
+                st.error("Authentication token has expired and cannot be refreshed. Please re-authenticate.")
+                st.stop()
         elif creds.expired:
             logger.error("Authentication token has expired and no refresh token is available.")
-            st.error("Authentication token has expired and no refresh token is available.")
-            st.markdown("""
-            ### Re-authentication Instructions:
-            1. Delete the existing token.json file
-            2. Run the authentication script again to generate a new token
-            3. Restart the app after completing these steps
+            st.error("""
+            Authentication token has expired and no refresh token is available. Please re-authenticate by:
+            1. Deleting the existing token.json file
+            2. Running the authentication script again to generate a new token
             """)
-            return None
+            st.stop()
         
         # Authenticate with Google Sheets
         client = gspread.authorize(creds)
         
         try:
-            # Explicitly open the spreadsheet and select the "Leads" tab
+            # Explicitly open the "Leads" spreadsheet and select the "Leads" tab
             spreadsheet = client.open(SPREADSHEET_NAME)  # Open the spreadsheet
             sheet = spreadsheet.worksheet("Leads")  # Open the specific sheet tab
             
@@ -383,62 +256,40 @@ def connect_to_google_sheets():
         
         except gspread.exceptions.WorksheetNotFound:
             logger.error(f"Worksheet 'Leads' not found in spreadsheet '{SPREADSHEET_NAME}'.")
-            st.error(f"Worksheet 'Leads' not found in spreadsheet '{SPREADSHEET_NAME}'.")
-            st.markdown("""
-            Please create a worksheet named 'Leads' in your spreadsheet.
-            1. Open your Google Spreadsheet
-            2. Add a new tab named 'Leads'
-            3. Refresh this app
-            """)
-            return None
+            st.error(f"Worksheet 'Leads' not found in spreadsheet '{SPREADSHEET_NAME}'. Please create a tab named 'Leads'.")
+            st.stop()
         
         except gspread.exceptions.SpreadsheetNotFound:
             logger.error(f"Spreadsheet '{SPREADSHEET_NAME}' not found")
-            st.error(f"Spreadsheet '{SPREADSHEET_NAME}' not found.")
-            st.markdown(f"""
-            Please check your .env configuration or create a spreadsheet with the name '{SPREADSHEET_NAME}'.
-            1. Open Google Sheets
-            2. Create a new spreadsheet named '{SPREADSHEET_NAME}'
-            3. Add a worksheet named 'Leads'
-            4. Refresh this app
-            """)
-            return None
+            st.error(f"Spreadsheet '{SPREADSHEET_NAME}' not found. Please check your .env configuration or create a spreadsheet with this name.")
+            st.stop()
         
         except gspread.exceptions.APIError as e:
             logger.error(f"Google Sheets API Error: {str(e)}")
             st.error(f"Google Sheets API Error: {str(e)}")
-            return None
+            st.stop()
 
     except Exception as e:
         logger.error(f"Error connecting to Google Sheets: {str(e)}")
         st.error(f"Error connecting to Google Sheets: {str(e)}")
-        return None
+        st.stop()
 
-# FIX #10: Improved retry functionality for failed rows
+# FIX #5 & #6: Function to retry failed rows
 def retry_failed_rows():
     if not st.session_state.failed_rows:
         st.info("No failed rows to retry.")
         return
     
-    failed_rows = st.session_state.failed_rows.copy()
-    # Clear the list first to avoid duplicate entries if retries fail again
-    st.session_state.failed_rows = []
+    failed_rows = st.session_state.failed_rows
+    st.session_state.failed_rows = []  # Clear the list
     
     sheet = connect_to_google_sheets()
-    if not sheet:
-        st.error("Cannot retry without Google Sheets connection. Please fix authentication issues first.")
-        # Restore the failed rows since we couldn't process them
-        st.session_state.failed_rows = failed_rows
-        return
     
     success_count = 0
     
     status_text = st.empty()
-    progress_bar = st.progress(0)
     
     for i, (row_data, business_name) in enumerate(failed_rows):
-        progress = (i + 1) / len(failed_rows)
-        progress_bar.progress(progress)
         status_text.text(f"Retrying {i+1}/{len(failed_rows)}: {business_name}")
         
         # Try to append with fresh retry counter
@@ -453,11 +304,9 @@ def retry_failed_rows():
     else:
         status_text.text(f"Retry completed. Successfully added all {success_count} previously failed rows!")
         st.success("Successfully added all previously failed rows!")
-        # Update the local file to reflect empty failed rows
-        save_failed_rows_to_file()
 
 # Team Members
-team_members = ["Allan", "Arnis", "Matt", "Stan", "James", "Kyle", "Bailey", "Martin", "Diogo"]
+team_members = ["Allan", "Arnis", "Matt", "Stan", "James", "Kyle", "Kelvin", "Bailey"]
 
 # Dictionary of regions with corresponding locations
 regions = {
@@ -584,9 +433,6 @@ industry_categories = {
         "plastics_manufacturer", "packaging_supplier"
     ]
 }
-
-# FIX #5: Load any previously failed rows from file on app startup
-load_failed_rows_from_file()
 
 # Streamlit Web App
 st.title("Business Finder for Notion CRM")
