@@ -33,8 +33,8 @@ except ImportError:
 
 # Load API keys from .env file
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Leads")
+GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
+SPREADSHEET_NAME = st.secrets.get("SPREADSHEET_NAME", os.getenv("SPREADSHEET_NAME", "Leads"))
 
 # FIX #6: Use setdefault to ensure session state variables exist without overwriting them
 if 'processed_businesses' not in st.session_state:
@@ -233,7 +233,8 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                      query_text = f"{current_keyword} in {location}" + (f" {region}" if region else "")
                      encoded_query = urllib.parse.quote_plus(query_text)
 
-                url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}"
+                fields = "place_id,name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
+                url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}"
 
                 # --- Pagination Logic ---
                 all_page_results = [] # Results for THIS keyword's paginated/grid search
