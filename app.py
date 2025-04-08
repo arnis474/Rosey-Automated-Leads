@@ -15,6 +15,7 @@ from utils.radius_utils import generate_grid_points, perform_grid_search
 from app import safe_request # Make sure your safe_request is importable if needed, or defined globally
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 
@@ -507,6 +508,7 @@ def connect_to_google_sheets():
             
         creds = Credentials.from_authorized_user_file(
             "token.json", 
+
             ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         )
         
