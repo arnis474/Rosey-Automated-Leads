@@ -400,7 +400,7 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                             "name": combined_data.get("name", "N/A"),
                             "address": combined_data.get("formatted_address", "N/A"),
                             "Maps_url": combined_data.get("url", "N/A"),
-                            "business_type": industry, # Use ORIGINAL industry
+                            "business_type": industry,
                             "rating": combined_data.get("rating", "N/A"),
                             "phone_number": combined_data.get("formatted_phone_number", "N/A"),
                             "website": website,
@@ -410,7 +410,17 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                             "linkedin": social_links.get("linkedin", "N/A"),
                             "tiktok": social_links.get("tiktok", "N/A"),
                             "opening_hours": opening_hours,
+
+                            # Optional (auto-managed columns)
+                            "assigned_to": assigned_to,  # Set from UI
+                            "lead_score": "",            # Empty for sheet formulas
+                            "lead_quality": "",          # Empty for sheet formulas
+                            "contact_method": "",        # Empty for sheet formulas
+                            "contact_outcome": "❌ Not Contacted",  # Default outcome
+                            "notes": "",
+                            "duplicate": ""              # Blank, may be updated later in sheet
                         })
+
                     # End if place_id is new
                 # End loop 'for place in ...'
                 logger.info(f"Finished processing variants for '{industry}'. Added {len(ids_added_this_industry_block)} new unique businesses to final list.")
