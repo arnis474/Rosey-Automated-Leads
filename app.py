@@ -12,7 +12,7 @@ import pandas as pd # To display results nicely in a table
 #rom utils.pagination import fetch_places_paginated # Our new function for paginated search
 from utils.api_utils import make_api_request_with_retry, PLACES_API_ENDPOINT_DETAILS # For the modified get_place_details
 from utils.radius_utils import generate_grid_points, perform_grid_search
-from app import safe_request # Make sure your safe_request is importable if needed, or defined globally
+#rom app import safe_request # Make sure your safe_request is importable if needed, or defined globally
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
