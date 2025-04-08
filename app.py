@@ -267,7 +267,7 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                      query_text = f"{current_keyword} in {location}" + (f" {region}" if region else "")
                      encoded_query = urllib.parse.quote_plus(query_text)
 
-                fields = "place_id,name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
+                fields = "name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
                 url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}"
 
                 # --- Pagination Logic ---
@@ -377,10 +377,9 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                 ids_added_this_industry_block = set()
 
                 for place in all_results_for_industry_and_variants:
-                    place_id = place.get('place_id', '')
-                    if place_id and place_id not in processed_set and place_id not in ids_added_this_industry_block:
-                        processed_set.add(place_id)
-                        ids_added_this_industry_block.add(place_id)
+                    maps_url = place.get("url") or f"https://www.google.com/maps/place/?q=place_id:{place.get('place_id')}"
+                    if maps_url not in processed_set:
+                        processed_set.add(maps_url)
 
                         # --- Conditional Details Call ---
                         if not all(key in place for key in ['formatted_phone_number', 'website']):
@@ -400,7 +399,7 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                         businesses.append({
                             "name": combined_data.get("name", "N/A"),
                             "address": combined_data.get("formatted_address", "N/A"),
-                            "Maps_url": combined_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"), # Correct Maps URL
+                            "Maps_url": combined_data.get("url", "N/A"),
                             "business_type": industry, # Use ORIGINAL industry
                             "rating": combined_data.get("rating", "N/A"),
                             "phone_number": combined_data.get("formatted_phone_number", "N/A"),
@@ -411,7 +410,6 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                             "linkedin": social_links.get("linkedin", "N/A"),
                             "tiktok": social_links.get("tiktok", "N/A"),
                             "opening_hours": opening_hours,
-                            "place_id": place_id
                         })
                     # End if place_id is new
                 # End loop 'for place in ...'
