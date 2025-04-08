@@ -2,100 +2,132 @@
 
 import time
 import logging
-# Use relative import if api_utils is in the same directory
-from .api_utils import make_api_request_with_retry, PLACES_API_ENDPOINT_NEARBY
+# We will pass the safe_request function as an argument now
 
 # --- Constants ---
-MAX_RESULTS_PER_QUERY = 60
+MAX_RESULTS_PER_QUERY = 60 # Google Places limit (20 per page, max 3 pages)
 RESULTS_PER_PAGE = 20
 MAX_PAGES = MAX_RESULTS_PER_QUERY // RESULTS_PER_PAGE
-PAGE_TOKEN_DELAY_SECONDS = 2 # Google recommends a short delay
+PAGE_TOKEN_DELAY_SECONDS = 2 # Crucial delay required by Google
 
-def fetch_places_paginated(initial_params):
+# Define API endpoints (can be imported or defined here)
+PLACES_API_ENDPOINT_TEXTSEARCH = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+# PLACES_API_ENDPOINT_NEARBY = "https://maps.googleapis.com/maps/api/place/nearbysearch/json" # Keep if needed elsewhere
+
+def fetch_places_paginated_generic(initial_params, safe_request_func, api_key, endpoint_url=PLACES_API_ENDPOINT_TEXTSEARCH):
     """
-    Fetches up to MAX_RESULTS_PER_QUERY places using Google Places API pagination (Nearby Search).
+    Fetches up to MAX_RESULTS_PER_QUERY places using Google Places API pagination.
+    Designed to be generic and use a passed-in request function (like safe_request).
 
     Args:
-        initial_params (dict): Initial query parameters (e.g., location, radius, keyword/type).
-                               'key' will be added automatically by make_api_request_with_retry.
+        initial_params (dict): Initial query parameters compatible with the endpoint
+                            (e.g., {'location':'lat,lon', 'radius':radius, 'query':keyword} for TextSearch).
+                            MUST NOT include 'key'.
+        safe_request_func (function): The function to use for making API requests (e.g., safe_request from app.py).
+                                    It should accept a URL string and return parsed JSON or None.
+        api_key (str): The Google API Key.
+        endpoint_url (str): The Google Places API endpoint URL to use.
 
     Returns:
         list: A list of raw place result dictionaries, or None if the initial request fails.
-        set: A set of unique place_ids collected during this paginated search.
+        set: A set of unique place_ids collected during this specific paginated search run.
     """
-    all_results = []
-    seen_place_ids_this_query = set() # Tracks IDs found *within this specific paginated query*
-    current_page = 0
-    
-    # Use the initial params for the first request
-    current_params = initial_params.copy() 
+    if not api_key:
+        logging.error("API Key missing, cannot fetch places.")
+        return None, set()
 
-    while current_page < MAX_PAGES:
+    all_results_this_run = []
+    seen_place_ids_this_run = set() # Tracks IDs found *within this specific paginated query*
+    current_page = 0
+    next_page_token = None
+
+    # --- Initial Request (Page 1) ---
+    page_num = current_page + 1
+    logging.info(f"Paginated Fetch: Requesting Page {page_num}/{MAX_PAGES} from {endpoint_url}")
+
+    # Construct URL for the first request
+    # Add key to a copy of params
+    params_with_key = initial_params.copy()
+    params_with_key['key'] = api_key
+    # Create URL with query parameters properly encoded (requests usually handles this, but being explicit)
+    query_string = '&'.join([f"{k}={v}" for k, v in params_with_key.items()])
+    current_url = f"{endpoint_url}?{query_string}"
+
+    response_data = safe_request_func(current_url) # Use the passed-in request function
+
+    if response_data is None:
+         logging.error(f"Paginated Fetch: Initial API request failed for params: {initial_params}. Aborting this fetch.")
+         return None, set() # Indicate failure
+
+    results_this_page = response_data.get('results', [])
+    status = response_data.get('status')
+
+    if status == 'OK':
+        for place in results_this_page:
+             place_id = place.get('place_id')
+             if place_id and place_id not in seen_place_ids_this_run:
+                 all_results_this_run.append(place)
+                 seen_place_ids_this_run.add(place_id)
+        next_page_token = response_data.get('next_page_token')
+        logging.info(f"Paginated Fetch: Page {page_num} - Found {len(results_this_page)} results. New unique this run: {len(seen_place_ids_this_run)}. Next Token: {'Yes' if next_page_token else 'No'}")
+    elif status == 'ZERO_RESULTS':
+         logging.info(f"Paginated Fetch: Initial query returned ZERO_RESULTS for params: {initial_params}")
+         return [], set() # No results found
+    else:
+         # Handle other non-OK statuses from the first request
+         logging.error(f"Paginated Fetch: Initial request failed. Status: {status}. Error: {response_data.get('error_message')}. Params: {initial_params}")
+         return None, set() # Indicate failure
+
+
+    # --- Loop for Subsequent Pages (Pages 2, 3) ---
+    current_page += 1
+    while next_page_token and current_page < MAX_PAGES:
         page_num = current_page + 1
-        logging.info(f"Fetching page {page_num}/{MAX_PAGES}...")
-        
-        # Use the robust request function
-        response_data = make_api_request_with_retry(current_params, endpoint_url=PLACES_API_ENDPOINT_NEARBY)
+        logging.info(f"Paginated Fetch: Found next_page_token. Waiting {PAGE_TOKEN_DELAY_SECONDS}s before fetching page {page_num}.")
+        time.sleep(PAGE_TOKEN_DELAY_SECONDS)
+
+        # Construct URL for the next page (only token and key needed)
+        next_page_url = f"{endpoint_url}?pagetoken={next_page_token}&key={api_key}"
+
+        logging.info(f"Paginated Fetch: Requesting Page {page_num}/{MAX_PAGES}...")
+        response_data = safe_request_func(next_page_url) # Use the passed-in request function
 
         if response_data is None:
-             # Error already logged by make_api_request_with_retry
-             logging.error(f"API request failed for params: {current_params}. Stopping pagination for this query.")
-             # Return whatever was collected before the failure
-             return all_results, seen_place_ids_this_query 
+             logging.warning(f"Paginated Fetch: API request failed for page {page_num} (token: {next_page_token}). Proceeding with results gathered so far.")
+             break # Stop pagination if a subsequent page fails
 
         results_this_page = response_data.get('results', [])
         status = response_data.get('status')
+        newly_added_count = 0
 
-        if status == 'ZERO_RESULTS' and current_page == 0:
-             logging.info("Initial query returned ZERO_RESULTS. No places found.")
-             return [], set() # Return empty list and set immediately
-        elif status == 'ZERO_RESULTS':
-             # This might happen if subsequent pages somehow return zero, though unlikely
-             logging.info("Subsequent page returned ZERO_RESULTS.")
-             # Continue to check for next_page_token just in case, but don't process results
-
-        # Process results from the current page if status is OK
-        new_results_count_this_page = 0
         if status == 'OK':
-             for place in results_this_page:
+            for place in results_this_page:
                  place_id = place.get('place_id')
-                 if place_id:
-                     # Deduplication *within* this paginated search run
-                     if place_id not in seen_place_ids_this_query:
-                         all_results.append(place)
-                         seen_place_ids_this_query.add(place_id)
-                         new_results_count_this_page += 1
-                 else:
-                     logging.warning(f"Found a place result without place_id: {place.get('name', 'N/A')}")
-             
-             logging.info(f"Page {page_num}: Found {len(results_this_page)} results, added {new_results_count_this_page} new unique results for this query.")
-        elif status != 'ZERO_RESULTS': # Log other non-OK statuses if they somehow get here
-             logging.warning(f"Received status '{status}' on page {page_num}. Results may be incomplete.")
+                 if place_id and place_id not in seen_place_ids_this_run:
+                     all_results_this_run.append(place)
+                     seen_place_ids_this_run.add(place_id)
+                     newly_added_count +=1
+            next_page_token = response_data.get('next_page_token') # Get token for the *next* page
+            logging.info(f"Paginated Fetch: Page {page_num} - Found {len(results_this_page)} results. New unique this run: {newly_added_count}. Next Token: {'Yes' if next_page_token else 'No'}")
 
-
-        # Check if we have enough results or if there's a next page
-        if len(all_results) >= MAX_RESULTS_PER_QUERY:
-            logging.info(f"Reached or exceeded max results ({MAX_RESULTS_PER_QUERY}). Stopping pagination.")
-            break 
-
-        next_page_token = response_data.get('next_page_token')
-
-        if next_page_token:
-            current_page += 1
-            # Only continue if we haven't reached the page limit
-            if current_page < MAX_PAGES: 
-                logging.info(f"Found next_page_token. Waiting {PAGE_TOKEN_DELAY_SECONDS}s before fetching page {current_page + 1}.")
-                time.sleep(PAGE_TOKEN_DELAY_SECONDS) 
-                # Prepare params for the next page request - ONLY token and key are needed/allowed
-                current_params = {'pagetoken': next_page_token} 
-            else:
-                 logging.info(f"Reached max pages limit ({MAX_PAGES}). No more pages will be fetched even though a token exists.")
+            # Optional safety break
+            if not results_this_page and next_page_token:
+                 logging.warning("Paginated Fetch: Received next_page_token but no results, stopping.")
                  break
+        elif status == 'INVALID_REQUEST':
+             # This can happen if the token expires or is used too quickly
+             logging.warning(f"Paginated Fetch: Received INVALID_REQUEST for page {page_num}. Token might be invalid. Stopping pagination.")
+             next_page_token = None # Ensure loop terminates
+             break
         else:
-            logging.info("No next_page_token found. End of results for this query.")
-            break 
+             # Log other statuses but try to continue if possible? Or break? Let's break.
+             logging.warning(f"Paginated Fetch: Received status '{status}' for page {page_num}. Stopping pagination.")
+             next_page_token = None
+             break
 
-    logging.info(f"Pagination complete for initial params {initial_params}. Total unique results found in this run: {len(all_results)}")
-    # Return all unique results found in this specific multi-page query
-    # and the set of their IDs for cross-query deduplication later.
-    return all_results, seen_place_ids_this_query
+        current_page += 1
+        # Small delay before potentially starting next loop iteration (optional)
+        # time.sleep(0.1)
+
+    logging.info(f"Paginated Fetch: Finished. Total unique results in this run: {len(all_results_this_run)}")
+    return all_results_this_run, seen_place_ids_this_run

@@ -11,7 +11,8 @@ import logging # For detailed logging from our utils functions
 import pandas as pd # To display results nicely in a table
 from utils.pagination import fetch_places_paginated # Our new function for paginated search
 from utils.api_utils import make_api_request_with_retry, PLACES_API_ENDPOINT_DETAILS # For the modified get_place_details
-from google.oauth2.credentials import Credentials
+from utils.radius_utils import generate_grid_points, perform_grid_search
+from app import safe_request # Make sure your safe_request is importable if needed, or defined globally
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from dotenv import load_dotenv
@@ -134,147 +135,265 @@ def load_failed_rows_from_file():
     except Exception as e:
         logger.error(f"Error loading failed rows from file: {e}")
 
-# FIX #4: Optimize API calls by requesting more fields in the initial search
-def get_businesses(industries, locations, region):
-    businesses = []
-    
-    # FIX #1: Proper API key validation - check for both None and empty string
+# UPDATED get_businesses function with Synonym Expansion
+
+# FINAL UPDATED get_businesses function
+# Handles new arguments: search_target (list or string), grid_cell_radius_km, region (optional)
+# Includes synonym expansion, pagination, and grid fallback logic.
+
+def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
+    """
+    Fetches businesses using Google Places Text Search, handling pagination,
+    synonym expansion, and conditional grid search fallback.
+
+    Args:
+        industries (list): List of industry keywords selected by the user.
+        search_target (str or list): EITHER a single location string (manual input)
+                                     OR a list of location strings (dropdown selection).
+        grid_cell_radius_km (float): The radius (in km) for grid search cells, from the slider.
+        region (str, optional): The region context, provided only if using dropdowns. Defaults to None.
+
+    Returns:
+        list: A list of unique business dictionaries found. Returns empty list on error.
+    """
+    businesses = [] # Final list of processed business dicts
+
+    # --- Initial Checks ---
     if not GOOGLE_API_KEY:
         st.error("Google API Key not found or empty. Please check your .env file.")
+        # Returning [] instead of None to be consistent with other error returns below
         return []
-    
-    for location in locations:
-        for industry in industries:
-            # Add progress indicator
+    if not industries:
+        st.warning("No industries selected for search.")
+        return []
+    if not search_target:
+        st.warning("No search target (location/list) provided.")
+        return []
+
+    # Ensure necessary functions and dictionaries are globally accessible (add more checks if needed)
+    # These checks help prevent NameError if functions aren't defined before get_businesses
+    global INDUSTRY_SYNONYMS, safe_request, get_coordinates, generate_grid_points, perform_grid_search, extract_social_media
+    if 'INDUSTRY_SYNONYMS' not in globals(): logger.error("INDUSTRY_SYNONYMS missing"); return []
+    if 'safe_request' not in globals(): logger.error("safe_request missing"); return []
+    if 'get_coordinates' not in globals(): logger.error("get_coordinates missing"); return []
+    if 'generate_grid_points' not in globals(): logger.error("generate_grid_points missing"); return []
+    if 'perform_grid_search' not in globals(): logger.error("perform_grid_search missing"); return []
+    if 'extract_social_media' not in globals(): logger.error("extract_social_media missing"); return []
+
+    # --- Determine Locations to Process (Handles list or string input) ---
+    if isinstance(search_target, str):
+        locations_to_process = [search_target] # Treat manual input as a list with one item
+        logger.info(f"Processing manual location target: '{search_target}'")
+    elif isinstance(search_target, list):
+        locations_to_process = search_target
+        logger.info(f"Processing location list target: {locations_to_process} (Region context: {region})")
+    else:
+        st.error(f"Invalid search target type received: {type(search_target)}")
+        logger.error(f"Invalid search_target type: {type(search_target)}")
+        return []
+
+    # --- Convert Slider Radius to Meters (for Grid Search) ---
+    grid_cell_radius_meters_dynamic = grid_cell_radius_km * 1000
+    logger.info(f"Using dynamic grid cell radius: {grid_cell_radius_meters_dynamic:.0f}m")
+    # Keep overall city coverage fixed for now
+    CITY_COVERAGE_RADIUS_METERS = 15000 # Example: Fixed 15km coverage
+
+    # Get the master processed set reference ONCE
+    processed_set = st.session_state.processed_businesses
+
+    # --- Main Loop: Locations -> Industries -> Keywords (Synonyms) ---
+    for location in locations_to_process: # Loop through the determined list of locations
+        for industry in industries: # ORIGINAL industry term selected by user
             progress_text = st.empty()
-            progress_text.text(f"Searching for {industry} in {location}, {region}...")
-            
-            # URL encode the query parameters
-            encoded_query = urllib.parse.quote_plus(f"{industry} in {location} {region}")
-            
-            # FIX #4: Request more fields in the initial API call to reduce need for detail requests
-            fields = "place_id,name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
-            url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}"
-            
-            
-            # url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}" # Line ~187
+            progress_text.text(f"Starting search for '{industry}' and variants in '{location}'...")
+            logger.info(f"=== Processing Original Industry: '{industry}' in Location: '{location}' ===")
 
-            # --- Pagination Integration START ---
-            all_page_results = [] # List to hold results from all pages
-            current_page = 0
-            MAX_PAGES_TO_FETCH = 3 # Fetch initial page + 2 more (max 60 results)
-            next_page_token = None
+            # --- Synonym Expansion ---
+            search_keywords = [industry]
+            if industry in INDUSTRY_SYNONYMS:
+                variants = INDUSTRY_SYNONYMS[industry]
+                search_keywords.extend(variants)
+                logger.info(f"Expanded '{industry}' to search for: {search_keywords}")
+            # else: logger.info(f"No defined synonyms for '{industry}'.") # Less verbose
 
-            # Initial request (Page 1)
-            logger.info(f"Fetching page {current_page + 1} for '{industry}' in '{location}'...")
-            current_url = url # Use the originally constructed URL for the first request
-            data = safe_request(current_url) # Call your existing safe_request
+            all_results_for_industry_and_variants = [] # Accumulate results across keywords
 
-            if data is None:
-                st.error(f"Initial API request failed for {industry} in {location}. Skipping.")
-                logger.error(f"Initial safe_request failed for URL: {current_url}")
-                continue # Skip to the next industry/location
+            # --- Inner Loop: Keyword Variants ---
+            for current_keyword in search_keywords:
+                logger.info(f"--- Performing search for Keyword Variant: '{current_keyword}' (Original: '{industry}') in '{location}' ---")
+                progress_text.text(f"Searching for '{current_keyword}' in '{location}'...")
 
-            # Process initial results and get first token
-            page_results = data.get("results", [])
-            all_page_results.extend(page_results)
-            next_page_token = data.get("next_page_token")
-            current_page += 1
-            logger.info(f"Page 1: Found {len(page_results)} results. next_page_token: {'Yes' if next_page_token else 'No'}")
+                # --- Adapt Query based on Input Mode ---
+                if isinstance(search_target, str): # Manual mode
+                     # Use keyword + manual location string (which is 'location' in this loop)
+                     encoded_query = urllib.parse.quote_plus(f"{current_keyword} near {location}")
+                else: # List mode (search_target was a list)
+                     # Use keyword + location from list + region context (if available)
+                     query_text = f"{current_keyword} in {location}" + (f" {region}" if region else "")
+                     encoded_query = urllib.parse.quote_plus(query_text)
 
-            # Loop for subsequent pages (Pages 2 and 3)
-            while next_page_token and current_page < MAX_PAGES_TO_FETCH:
-                logger.info(f"Found next_page_token. Waiting 2 seconds before fetching page {current_page + 1}...")
-                time.sleep(2) # IMPORTANT: Wait before using the token
+                fields = "place_id,name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
+                url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}"
 
-                # Construct URL for the next page request (Text Search requires only token and key)
-                next_page_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken={next_page_token}&key={GOOGLE_API_KEY}"
-
-                logger.info(f"Fetching page {current_page + 1}...")
-                data = safe_request(next_page_url) # Call your existing safe_request
+                # --- Pagination Logic ---
+                all_page_results = [] # Results for THIS keyword's paginated/grid search
+                current_page = 0
+                MAX_PAGES_TO_FETCH = 3
+                next_page_token = None
+                logger.info(f"Fetching page {current_page + 1} for '{current_keyword}' query...")
+                current_url = url
+                data = safe_request(current_url)
 
                 if data is None:
-                    st.warning(f"API request failed for page {current_page + 1} (token: {next_page_token}). Proceeding with results gathered so far.")
-                    logger.error(f"safe_request failed for pagination URL: {next_page_url}")
-                    break # Stop pagination if a page fails
+                    st.error(f"Initial API request failed for keyword '{current_keyword}' in '{location}'. Skipping this keyword.")
+                    logger.error(f"Initial safe_request failed for keyword '{current_keyword}', URL: {current_url}")
+                    continue # Skip to next keyword variant
 
                 page_results = data.get("results", [])
                 all_page_results.extend(page_results)
-                next_page_token = data.get("next_page_token") # Get token for the *next* page
+                next_page_token = data.get("next_page_token")
                 current_page += 1
-                logger.info(f"Page {current_page}: Found {len(page_results)} results. next_page_token: {'Yes' if next_page_token else 'No'}")
+                logger.info(f"Page 1: Found {len(page_results)} results. next_page_token: {'Yes' if next_page_token else 'No'}")
 
-                # Optional safety break if API keeps giving tokens but no results
-                if not page_results and next_page_token:
-                    logger.warning("Received next_page_token but no results, stopping pagination.")
-                    break
+                while next_page_token and current_page < MAX_PAGES_TO_FETCH:
+                    logger.info(f"Found next_page_token. Waiting 2 seconds before fetching page {current_page + 1}...")
+                    time.sleep(2)
+                    next_page_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken={next_page_token}&key={GOOGLE_API_KEY}"
+                    logger.info(f"Fetching page {current_page + 1}...")
+                    data = safe_request(next_page_url)
+                    if data is None:
+                        st.warning(f"API request failed for page {current_page + 1}. Proceeding for '{current_keyword}'.")
+                        logger.error(f"safe_request failed for pagination URL: {next_page_url}")
+                        break
+                    page_results = data.get("results", [])
+                    all_page_results.extend(page_results)
+                    next_page_token = data.get("next_page_token")
+                    current_page += 1
+                    logger.info(f"Page {current_page}: Found {len(page_results)} results. next_page_token: {'Yes' if next_page_token else 'No'}")
+                    if not page_results and next_page_token: logger.warning("Received next_page_token but no results..."); break
+                logger.info(f"Finished pagination for '{current_keyword}'. Potential results before grid: {len(all_page_results)}")
+                # --- Pagination Logic END ---
 
-            logger.info(f"Finished pagination for '{industry}' in '{location}'. Total potential results: {len(all_page_results)}")
-            # --- Pagination Integration END ---
+                # --- Grid Search Fallback ---
+                GRID_SEARCH_THRESHOLD = 55
 
+                if len(all_page_results) < GRID_SEARCH_THRESHOLD:
+                    logger.warning(f"Paginated search for '{current_keyword}' found only {len(all_page_results)} results (<{GRID_SEARCH_THRESHOLD}). Initiating grid search...")
+                    st.write(f"  Expanding search for '{current_keyword}' with Grid...")
 
-            # Now process the combined results from all pages
-            if all_page_results: # Check if the combined list has results
-                processed_set = st.session_state.processed_businesses # Get the set for deduplication checks
-                
-                for place in all_page_results: # Loop through combined results from all pages
-                    # Skip if we've already processed this place
-                    place_id = place.get('place_id', '')
-                    if place_id in processed_set:
-                        continue
-                    
-                    # Add to processed set
-                    processed_set.add(place_id)
-                    
-                    # FIX #4: Only fetch additional details if necessary
-                    # Check if we have all the fields we need from the initial request
-                    if not all(key in place for key in ['formatted_phone_number', 'website']):
-                        # Fetch place details with exponential backoff
-                        details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_address,formatted_phone_number,website,opening_hours,url&key={GOOGLE_API_KEY}"
-                        details_response = safe_request(details_url)
-                        
-                        if details_response is None:
-                            st.error(f"Error fetching details for {place.get('name', 'Unknown')}")
-                            # Continue with partial data instead of skipping entirely
-                            details = {}
+                    # --- Adapt Geocoding based on Input Mode ---
+                    if isinstance(search_target, str): # Manual mode
+                        location_for_geocoding = location # Geocode the manual input directly
+                    else: # List mode
+                        location_for_geocoding = f"{location}, {region}" # Use location + region context
+
+                    center_lat, center_lon = get_coordinates(location_for_geocoding, GOOGLE_API_KEY)
+
+                    if center_lat is not None and center_lon is not None:
+                        # Generate grid points using DYNAMIC cell radius
+                        grid_points = generate_grid_points(
+                            center_lat, center_lon,
+                            CITY_COVERAGE_RADIUS_METERS,
+                            grid_cell_radius_meters_dynamic # Use dynamic radius
+                        )
+                        if grid_points:
+                            st.write(f"    Generated {len(grid_points)} points for grid search for '{current_keyword}'.")
+                            # Perform grid search using DYNAMIC cell radius
+                            grid_results = perform_grid_search(
+                                industry_keyword=current_keyword,
+                                grid_points=grid_points,
+                                search_radius_meters=grid_cell_radius_meters_dynamic, # Use dynamic radius
+                                processed_businesses_set=processed_set, # Pass master set
+                                safe_request_func=safe_request,
+                                api_key=GOOGLE_API_KEY
+                            )
+                            if grid_results:
+                                 new_grid_count = len(grid_results)
+                                 logger.info(f"Grid search found {new_grid_count} additional unique leads for '{current_keyword}'.")
+                                 st.write(f"    Grid search added {new_grid_count} new unique leads.")
+                                 all_page_results.extend(grid_results) # Add grid results
+                                 logger.info(f"Total results for '{current_keyword}' after merging grid: {len(all_page_results)}")
+                            else:
+                                 logger.info("Grid search did not find any additional unique leads for this keyword.")
+                                 st.write("    Grid search found no additional new leads for this keyword.")
                         else:
-                            details = details_response.get("result", {})
+                             logger.warning("Grid point generation failed.")
+                             st.write("    Grid point generation failed.")
                     else:
-                        details = place
-                    
-                    # Merge data from both sources
-                    combined_data = {**place, **(details or {})}
-                    
-                    website = combined_data.get("website", "N/A")
-                    social_links = extract_social_media(website)
-                    
-                    # Get opening hours safely
-                    opening_hours = ", ".join(
-                        combined_data.get("opening_hours", {}).get("weekday_text", [])
-                    ) if "opening_hours" in combined_data else "N/A"
-                    
-                    businesses.append({
-                        "name": combined_data.get("name", "N/A"),
-                        "address": combined_data.get("formatted_address", "N/A"),
-                        "google_maps_url": combined_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"),
-                        "business_type": industry,
-                        "rating": combined_data.get("rating", "N/A"),
-                        "phone_number": combined_data.get("formatted_phone_number", "N/A"),
-                        "website": website,
-                        "facebook": social_links.get("facebook", "N/A"),
-                        "instagram": social_links.get("instagram", "N/A"),
-                        "twitter": social_links.get("twitter", "N/A"),
-                        "linkedin": social_links.get("linkedin", "N/A"),
-                        "tiktok": social_links.get("tiktok", "N/A"),
-                        "opening_hours": opening_hours
-                    })
-            else:
-                logger.warning(f"No businesses found for '{industry}' in '{location}'.")
-                st.warning(f"No businesses found for '{industry}' in '{location}'.")
-            
-            progress_text.empty()
+                        logger.error(f"Could not get coordinates for {location_for_geocoding}. Skipping grid search for '{current_keyword}'.")
+                        st.error(f"    Could not get coordinates. Skipping grid search for '{current_keyword}'.")
+                else:
+                    logger.info(f"Paginated search for '{current_keyword}' found enough results (>= {GRID_SEARCH_THRESHOLD}). Skipping grid search.")
+                # --- Grid Search Fallback END ---
 
-    return businesses
+                # Accumulate results for THIS keyword variant
+                all_results_for_industry_and_variants.extend(all_page_results)
+                # logger.debug(...) # Reduce noise, info log below is better
+
+            # --- End Inner Loop: 'for current_keyword in search_keywords:' ---
+
+            logger.info(f"Accumulated {len(all_results_for_industry_and_variants)} potential results total for original industry '{industry}' in '{location}'.")
+
+            # --- Process Combined Results (for original industry + variants) ---
+            progress_text.text(f"Processing {len(all_results_for_industry_and_variants)} results for '{industry}' in '{location}'...")
+            if all_results_for_industry_and_variants:
+                logger.info(f"Processing all {len(all_results_for_industry_and_variants)} results gathered...")
+                # processed_set = st.session_state.processed_businesses # Already got reference above
+                ids_added_this_industry_block = set()
+
+                for place in all_results_for_industry_and_variants:
+                    place_id = place.get('place_id', '')
+                    if place_id and place_id not in processed_set and place_id not in ids_added_this_industry_block:
+                        processed_set.add(place_id)
+                        ids_added_this_industry_block.add(place_id)
+
+                        # --- Conditional Details Call ---
+                        if not all(key in place for key in ['formatted_phone_number', 'website']):
+                            details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_address,formatted_phone_number,website,opening_hours,url&key={GOOGLE_API_KEY}"
+                            details_response = safe_request(details_url)
+                            details = details_response.get("result", {}) if details_response else {}
+                            if not details: logger.error(f"Error fetching details for {place.get('name', 'Unknown')}")
+                        else:
+                            details = place
+
+                        # --- Merge data, Extract Socials, Format Output ---
+                        combined_data = {**place, **(details or {})}
+                        website = combined_data.get("website", "N/A")
+                        social_links = extract_social_media(website)
+                        opening_hours = ", ".join(combined_data.get("opening_hours", {}).get("weekday_text", [])) if combined_data.get("opening_hours") else "N/A"
+
+                        businesses.append({
+                            "name": combined_data.get("name", "N/A"),
+                            "address": combined_data.get("formatted_address", "N/A"),
+                            "Maps_url": combined_data.get("url", f"https://www.google.com/maps/place/?q=place_id:{place_id}"), # Correct Maps URL
+                            "business_type": industry, # Use ORIGINAL industry
+                            "rating": combined_data.get("rating", "N/A"),
+                            "phone_number": combined_data.get("formatted_phone_number", "N/A"),
+                            "website": website,
+                            "facebook": social_links.get("facebook", "N/A"),
+                            "instagram": social_links.get("instagram", "N/A"),
+                            "twitter": social_links.get("twitter", "N/A"),
+                            "linkedin": social_links.get("linkedin", "N/A"),
+                            "tiktok": social_links.get("tiktok", "N/A"),
+                            "opening_hours": opening_hours,
+                            "place_id": place_id
+                        })
+                    # End if place_id is new
+                # End loop 'for place in ...'
+                logger.info(f"Finished processing variants for '{industry}'. Added {len(ids_added_this_industry_block)} new unique businesses to final list.")
+            else:
+                 logger.warning(f"No businesses found for '{industry}' or its variants in '{location}'.")
+
+            progress_text.empty() # Clear progress text
+
+        # End loop 'for industry in industries:'
+    # End loop 'for location in locations_to_process:'
+
+    # --- Sorting Results (Optional - Skipped as per user request) ---
+    # ...
+
+    logger.info(f"get_businesses finished. Total unique businesses collected: {len(businesses)}")
+    return businesses # Return the final list
 
 # FIX #8: Improve social media extraction with better error handling
 def extract_social_media(website_url):
@@ -566,76 +685,216 @@ regions = {
     ]
 }
 
-# Industry categories & subcategories
+# Industry categories & subcategories (Expanded)
 industry_categories = {
     "Health & Beauty": [
         "barber_shop", "hair_salon", "beauty_salon", "spa", "pharmacy",
         "dentist", "doctor", "hospital", "physiotherapist", "optician",
-        "chiropractor", "nail_salon", "massage_therapist", "tanning_salon"
+        "chiropractor", "nail_salon", "massage_therapist", "tanning_salon",
+        "veterinary_care", # Added
+        "hearing_aid_store", # Added
+        "cosmetic_surgery" # Added
     ],
 
     "Hospitality & Food": [
-        "restaurant", "cafe", "bar", "bakery", "fast_food", "night_club",
-        "catering_service", "ice_cream_shop", "food_truck", "tea_house"
+        "restaurant", "cafe", "bar", "pub", # Added pub as common term
+        "bakery", "fast_food", "meal_takeaway", # Added meal_takeaway
+        "night_club", "catering_service", "ice_cream_shop", "food_truck",
+        "tea_house", "lodging", "hotel", "motel", # Added lodging/hotel/motel
+        "grocery_store", "supermarket" # Added grocery_store
     ],
 
     "Retail & Shopping": [
-        "clothing_store", "shoe_store", "supermarket", "jewelry_store",
-        "home_goods_store", "book_store", "florist", "furniture_store",
-        "convenience_store", "hardware_store", "pet_store", "shopping_mall",
-        "liquor_store", "toy_store", "baby_store", "outdoor_sports_store",
-        "second_hand_store", "pawn_shop", "gift_shop", "hobby_shop"
+        "clothing_store", "shoe_store", "department_store", # Added department_store
+        "supermarket", "grocery_store", # Added grocery_store here too for overlap
+        "jewelry_store", "home_goods_store", "book_store", "florist",
+        "furniture_store", "convenience_store", "hardware_store",
+        "pet_store", "shopping_mall", "liquor_store", "toy_store",
+        "baby_store", "bicycle_store", # Added bicycle_store
+        "electronics_store", # Keeping here, though could be Tech
+        "mobile_phone_store", # Added
+        "garden_center", # Added
+        "music_store", # Added
+        "video_game_store", # Added
+        "outdoor_sports_store", "second_hand_store", "pawn_shop",
+        "gift_shop", "hobby_shop"
     ],
 
     "Automotive": [
         "car_dealer", "car_rental", "car_repair", "car_wash", "gas_station",
-        "motorcycle_dealer", "auto_parts_store", "tire_shop", "truck_dealer"
+        "motorcycle_dealer", "auto_parts_store", "tire_shop", "truck_dealer",
+        "rv_dealer" # Added
+        # parking omitted as likely less relevant for lead gen
     ],
 
     "Trades & Services": [
-        "electrician", "plumber", "locksmith", "moving_company", "roofing_contractor",
+        "electrician", "plumber", "locksmith", "roofing_contractor",
+        "general_contractor", # Added
+        "hvac_contractor", # Added
         "construction_company", "painter", "pest_control_service", "handyman",
         "carpenter", "gardener", "landscaper", "window_cleaning_service",
-        "cleaning_service", "excavation_contractor", "tree_service"
+        "cleaning_service", "laundry", # Added
+        "storage", # Added self-storage
+        "security_systems", # Added
+        "excavation_contractor", "tree_service"
     ],
 
     "Finance & Professional Services": [
-        "accounting", "bank", "insurance_agency", "lawyer",
-        "real_estate_agency", "consulting", "marketing_agency",
+        "accounting", "bank", "insurance_agency", "lawyer", "architect", # Added architect
+        "real_estate_agency", # Kept here, also see Real Estate category
+        "consulting", "marketing_agency", "employment_agency", # Added employment_agency
         "financial_planner", "mortgage_broker", "payday_loan",
-        "legal_service", "notary_public", "tax_preparation_service"
+        "legal_service", "notary_public", "tax_preparation_service",
+        "photographer" # Added
     ],
 
     "Fitness & Recreation": [
         "gym", "stadium", "sports_club", "yoga_studio", "swimming_pool",
         "fitness_center", "martial_arts_school", "personal_trainer",
-        "rock_climbing_gym", "boxing_gym", "dance_studio"
+        "rock_climbing_gym", "boxing_gym", "dance_studio",
+        "golf_course" # Added
     ],
 
     "Education & Childcare": [
         "school", "university", "library", "tutoring_service",
         "preschool", "child_care", "music_school", "language_school",
-        "driving_school", "cooking_school"
+        "driving_school", "cooking_school", "art_school", # Added
+        "trade_school" # Added
     ],
 
     "Tech & IT Services": [
-        "it_services", "computer_store", "electronics_store",
+        "it_services", "computer_store", "electronics_store", # Kept here
+        "computer_repair", # Added
         "web_design", "software_company", "telecommunications_company",
         "cyber_security_firm", "app_development", "data_recovery_service"
     ],
 
     "Entertainment & Tourism": [
         "museum", "art_gallery", "amusement_park", "casino",
-        "travel_agency", "zoo", "movie_theater", "escape_room",
-        "bowling_alley", "water_park", "arcade", "circus",
+        "travel_agency", "zoo", "aquarium", # Added aquarium
+        "movie_theater", "cinema", # Added cinema
+        "stadium", # Added here too/instead of Fitness
+        "night_club", # Added here too/instead of Hospitality
+        "event_venue", # Added
+        "wedding_venue", # Added
+        "escape_room", "bowling_alley", "water_park", "arcade", "circus",
         "karaoke_bar", "theme_park", "tour_operator"
     ],
 
     "Industrial & Manufacturing": [
         "factory", "warehouse", "metal_fabricator", "printing_service",
         "recycling_center", "chemical_supplier", "engineering_firm",
-        "plastics_manufacturer", "packaging_supplier"
+        "plastics_manufacturer", "packaging_supplier", "logistics", # Added
+        "wholesale" # Added
+    ],
+    # --- New Categories Added ---
+    "Transportation & Logistics": [
+        "moving_company", # Moved/Copied from Trades
+        "storage", # Copied from Trades
+        "courier_service", # Added
+        "taxi_service", # Added
+        "logistics", # Copied from Industrial
+        "airport", # Added
+        "train_station", # Added
+        "bus_station" # Added
+        # warehouse could also fit here
+    ],
+    "Real Estate Services": [
+        "real_estate_agency", # Copied from Finance/Pro Services
+        "property_management", # Added
+        "building_developer", # Added
+        "surveyor" # Added (related profession)
     ]
+}
+
+# --- Keyword Synonym Mapping ---
+# Maps a primary industry keyword (from industry_categories)
+# to a list of alternative terms to also search for.
+
+INDUSTRY_SYNONYMS = {
+    # Health & Beauty
+    "barber_shop": ["barber", "men's grooming"],
+    "hair_salon": ["hairdresser", "stylist", "hair studio"],
+    "beauty_salon": ["beautician", "skin care clinic", "aesthetics clinic", "beauty parlour"],
+    "spa": ["day spa", "health spa", "wellness center"],
+    "pharmacy": ["drugstore", "chemist"],
+    "dentist": ["dental clinic", "dental surgery", "orthodontist"],
+    "doctor": ["gp", "medical clinic", "physician"],
+    "physiotherapist": ["physical therapist", "physio"],
+    "optician": ["optometrist", "eye doctor", "glasses store"],
+    "massage_therapist": ["massage therapy", "masseur", "masseuse"],
+    "veterinary_care": ["vet", "animal hospital", "veterinarian"],
+
+    # Hospitality & Food
+    "restaurant": ["eatery", "diner", "bistro", "food place"],
+    "cafe": ["coffee shop", "coffeeshop", "tea room", "internet cafe"],
+    "bar": ["pub", "tavern", "lounge", "inn"],
+    "fast_food": ["takeaway", "take out", "fast food restaurant"],
+    "night_club": ["club", "disco"],
+    "catering_service": ["caterer", "event catering"],
+    "lodging": ["accommodation", "inn"], # Generic term for hotel/motel etc.
+    "hotel": ["inn"], # Hotel is usually specific enough
+    "grocery_store": ["food market", "grocer"],
+
+    # Retail & Shopping
+    "clothing_store": ["fashion boutique", "apparel store", "clothes shop"],
+    "shoe_store": ["footwear store"],
+    "supermarket": ["grocery store"], # Overlap is fine
+    "jewelry_store": ["jeweller"],
+    "home_goods_store": ["homewares", "home store"],
+    "book_store": ["bookshop"],
+    "hardware_store": ["diy store"],
+    "liquor_store": ["off licence", "wine shop", "bottle shop"],
+    "mobile_phone_store": ["phone shop"],
+    "second_hand_store": ["charity shop", "thrift store", "consignment shop"],
+
+    # Automotive
+    "car_repair": ["mechanic", "garage", "auto repair", "car service", "mot centre"],
+    "gas_station": ["petrol station", "fuel station", "filling station"],
+    "tire_shop": ["tyre centre", "tyre shop"],
+
+    # Trades & Services
+    "plumber": ["plumbing services", "heating engineer"],
+    "electrician": ["electrical contractor", "electrical services"],
+    "roofing_contractor": ["roofer"],
+    "construction_company": ["builder", "building contractor"],
+    "gardener": ["gardening services"],
+    "landscaper": ["landscaping services"],
+    "cleaning_service": ["cleaners", "commercial cleaning", "domestic cleaning"],
+    "storage": ["self storage", "storage units"],
+    "laundry": ["launderette", "dry cleaners"],
+
+    # Finance & Professional Services
+    "accounting": ["accountant", "bookkeeping service"],
+    "insurance_agency": ["insurance broker"],
+    "lawyer": ["solicitor", "barrister", "law firm", "legal advice"],
+    "real_estate_agency": ["estate agent", "realtor"],
+    "marketing_agency": ["advertising agency", "digital marketing"],
+    "photographer": ["photography studio"],
+
+    # Fitness & Recreation
+    "gym": ["health club", "fitness studio"],
+    "fitness_center": ["gym", "health club"], # Allow overlap
+
+    # Education & Childcare
+    "child_care": ["nursery", "creche", "daycare"],
+    "driving_school": ["driving lessons", "driving instructor"],
+
+    # Tech & IT Services
+    "it_services": ["it support", "managed it services"],
+    "computer_store": ["pc store"],
+    "computer_repair": ["pc repair", "laptop repair"],
+    "web_design": ["web developer", "website agency"],
+    "software_company": ["software house", "software development"],
+
+    # Entertainment & Tourism
+    "movie_theater": ["cinema", "picture house"],
+
+    # Industrial & Manufacturing
+    "printing_service": ["printers", "print shop"],
+    "logistics": ["haulage", "transport company", "freight forwarder"]
+
+    # Add more as needed...
 }
 
 # FIX #5: Load any previously failed rows from file on app startup
@@ -648,123 +907,182 @@ st.write("Find businesses by industry and location, then save them directly to y
 # Create tabs for different sections
 tab1, tab2, tab3 = st.tabs(["Search Businesses", "Failed Jobs", "App Settings"])
 
+# ==============================================================================
+# TAB 1: Search Businesses - UPDATED UI and Button Logic
+# ==============================================================================
 with tab1:
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        selected_category = st.selectbox("Select Industry Category", list(industry_categories.keys()))
-        selected_industries = st.multiselect("Select Industries", industry_categories[selected_category])
-    
-    with col2:
-        # Select region first
-        selected_region = st.selectbox("Select Region", list(regions.keys()))
-        # Dynamically update available locations based on selected region
-        selected_locations = st.multiselect("Select Locations", regions[selected_region])
-    
-    assigned_to = st.selectbox("Assign to Team Member", team_members)
-    
+    st.subheader("1. Select Industry")
+    # --- Industry Selection ---
+    col1_industry, col2_industry_multi = st.columns([1, 2])
+    with col1_industry:
+        selected_category = st.selectbox(
+            "Select Industry Category",
+            list(industry_categories.keys()),
+            key="industry_category_selector" # Added key
+        )
+    with col2_industry_multi:
+        # Ensure the category exists before trying to access it
+        if selected_category in industry_categories:
+            selected_industries = st.multiselect(
+                f"Select Specific Industries in '{selected_category}'",
+                industry_categories[selected_category],
+                key="industry_multiselect" # Added key
+            )
+        else:
+            st.error("Selected category not found in configuration.")
+            selected_industries = [] # Default to empty list if category invalid
+
+    st.divider() # Visual separator
+
+    st.subheader("2. Select Location")
+    # --- Location Input Method ---
+    location_input_method = st.radio(
+        "Location Input Method:",
+        ["Select Location from Lists", "Enter Location Manually"],
+        key="location_input_mode", # Added key
+        horizontal=True
+    )
+
+    # Initialize variables to store selections/input
+    locations_from_list = []
+    region_from_list = None
+    manual_location_input_str = ""
+
+    # --- Conditional Location Input Widgets ---
+    if location_input_method == "Select Location from Lists":
+        col1_region, col2_location_multi = st.columns([1, 2])
+        with col1_region:
+            region_from_list = st.selectbox(
+                "Select Region",
+                list(regions.keys()),
+                key="region_selector" # Added key
+            )
+        with col2_location_multi:
+            if region_from_list and region_from_list in regions: # Check region validity
+                available_locations = regions[region_from_list]
+                locations_from_list = st.multiselect(
+                    f"Select Locations in '{region_from_list}'",
+                    available_locations,
+                    key="location_multiselect" # Added key
+                )
+            elif region_from_list:
+                 st.warning(f"Region '{region_from_list}' not found in configuration.")
+            else:
+                st.info("Select a region to see available locations.")
+
+    elif location_input_method == "Enter Location Manually":
+        manual_location_input_str = st.text_input(
+            "Enter Location (e.g., 'Temple Bar, Dublin', 'London Eye', 'BT35 8PE')",
+            key="manual_location_input", # Added key
+            placeholder="Type a place, neighborhood, address, or postcode..."
+        )
+
+    st.divider()
+
+    st.subheader("3. Configure Search Options")
+    # --- Radius Slider ---
+    grid_cell_radius_km = st.slider(
+        "Grid Search Cell Radius (km) - Smaller radius finds more in dense areas but uses more API calls",
+        min_value=0.2,  # Min 200m
+        max_value=5.0,  # Max 5km
+        value=1.0,      # Default 1km
+        step=0.1,
+        key="grid_radius_slider" # Added key
+    )
+    st.caption(f"Selected grid cell radius: {grid_cell_radius_km * 1000:.0f} meters. This is only used if the initial search finds fewer than ~55 results.")
+
+    # --- Team Member Assignment ---
+    assigned_to = st.selectbox(
+        "Assign Found Leads to Team Member",
+         # Check team_members exists and has items
+        team_members if 'team_members' in globals() and team_members else ["Default"],
+        key="assignee_selector" # Added key
+        )
+    # Note: 'assigned_to' is read here but used later during the saving process.
+
+    st.divider()
+    st.subheader("4. Start Search")
+
+    # --- "Find Businesses" Button and Logic ---
     if st.button("Find Businesses"):
-        # FIX #1: Validate API key before proceeding
+
+        # --- Read Inputs based on Mode (Using widget keys) ---
+        current_selected_industries = st.session_state.get("industry_multiselect", [])
+
+        input_mode = st.session_state.get("location_input_mode", "Select Location from Lists")
+        search_target = None # Will hold list from multiselect or string from text input
+        region_context = None # Will hold region string if using list mode
+
+        # Get location input based on mode
+        if input_mode == "Select Location from Lists":
+            search_target = st.session_state.get("location_multiselect", [])
+            region_context = st.session_state.get("region_selector")
+            # Validation for list mode
+            if not search_target:
+                st.error("Please select at least one location from the list.")
+                st.stop()
+            if not region_context:
+                st.error("Please select a region.")
+                st.stop()
+            logger.info(f"Starting search. Mode: List. Locations: {search_target}, Region: {region_context}")
+
+        elif input_mode == "Enter Location Manually":
+            search_target = st.session_state.get("manual_location_input", "").strip()
+            # Validation for manual mode
+            if not search_target:
+                st.error("Please enter a location manually.")
+                st.stop()
+            # region_context remains None
+            logger.info(f"Starting search. Mode: Manual. Location: '{search_target}'")
+
+        # Get radius from slider (using key)
+        grid_radius_value_km = st.session_state.get("grid_radius_slider", 1.0)
+
+        # --- General Validation (API Key and Industry) ---
         if not GOOGLE_API_KEY:
             st.error("Google API Key not found. Please check your .env file.")
-        elif not selected_industries:
-            st.error("Please select at least one industry")
-        elif not selected_locations:
-            st.error("Please select at least one location")
-        else:
-            with st.spinner("Fetching businesses..."):
-                all_businesses = get_businesses(selected_industries, selected_locations, selected_region)
-                
-                if all_businesses:
-                    st.success(f"Found {len(all_businesses)} businesses!")
-                    
-                    # Store businesses in session state for persistence
-                    st.session_state.all_businesses = all_businesses
+            st.stop()
+        if not current_selected_industries:
+            st.error("Please select at least one industry.")
+            st.stop()
 
-# Button to save businesses, only shown if search results are available
-if "all_businesses" in st.session_state and st.session_state.all_businesses:
-    st.subheader("Business Preview")
-    import pandas as pd
-    df = pd.DataFrame(st.session_state.all_businesses)
-    st.dataframe(df)
-
-    if st.button("Save All to Google Sheets"):
-        st.info("Preparing to save businesses to Google Sheets. Please wait...")
-        
-        with st.spinner("Saving businesses to Google Sheets..."):
+        # --- Call get_businesses (Pass new parameters) ---
+        st.info(f"Fetching businesses for '{', '.join(current_selected_industries)}'...") # User feedback
+        with st.spinner("Fetching businesses... This may take a while, especially if grid search is triggered."):
             try:
-                # Connect to Google Sheets
-                sheet = connect_to_google_sheets()
-                
-                if not sheet:
-                    st.error("❌ Could not connect to Google Sheets.")
+                # Call get_businesses with the arguments reflecting the new UI options
+                # The get_businesses function itself still needs modification (Next Step)
+                all_businesses = get_businesses(
+                    industries=current_selected_industries,
+                    search_target=search_target, # This is either the list or the string
+                    grid_cell_radius_km=grid_radius_value_km, # Pass the value from the slider
+                    region=region_context # Pass the region string (or None if manual mode)
+                )
+
+                # --- Process Results (Remains the same as your original code) ---
+                if all_businesses is not None: # Check if function returned list (even empty) or None (error)
+                    st.success(f"Search complete! Found {len(all_businesses)} unique businesses.")
+                    logger.info(f"get_businesses returned {len(all_businesses)} businesses.")
+                    # Store results in session state for display/saving
+                    st.session_state.all_businesses = all_businesses
                 else:
-                    st.write("✅ Successfully connected to Google Sheets.")  # Debug message
-                    st.write(f"📝 Spreadsheet Name: {sheet.spreadsheet.title}")
-                    st.write(f"📄 Worksheet Tab: {sheet.title}")
-
-                    # ✅ DEBUG TEST ROW
-                    test_row = ["DEBUG", "row", "test", "from", "Streamlit"]
-                    try:
-                        sheet.append_row(test_row)
-                        st.success("✅ [DEBUG] Test row appended successfully.")
-                    except Exception as e:
-                        st.error(f"❌ [DEBUG] Failed to append test row: {str(e)}")
-
-                    # 🚀 Proceed with real saving if test passed
-                    success_count = 0
-                    failures = []
-                    status_text = st.empty()
-
-                    if HAVE_STQDM:
-                        # Use stqdm for non-blocking progress tracking
-                        for business in stqdm(st.session_state.all_businesses, desc="Saving to Google Sheets"):
-                            business_name = business["name"]
-                            row_data = list(business.values()) + [assigned_to]
-
-                            st.write(f"📍 Attempting to save: {business_name}")  # Debug message
-                            success = safe_append(sheet, row_data, business_name)
-
-                            if success:
-                                success_count += 1
-                            else:
-                                failures.append(business_name)
-                    else:
-                        st.warning("For better performance, install stqdm: pip install stqdm")
-                        st.info("Falling back to standard method...")
-
-                        progress_bar = st.progress(0)
-
-                        for i, business in enumerate(st.session_state.all_businesses):
-                            business_name = business["name"]
-                            row_data = list(business.values()) + [assigned_to]
-
-                            progress = (i + 1) / len(st.session_state.all_businesses)
-                            progress_bar.progress(progress)
-                            status_text.text(f"Processing: {i+1}/{len(st.session_state.all_businesses)} - {business_name}")
-
-                            st.write(f"📍 Attempting to save: {business_name}")  # Debug message
-                            success = safe_append(sheet, row_data, business_name)
-
-                            if success:
-                                success_count += 1
-                            else:
-                                failures.append(business_name)
-
-                    # Final status update
-                    if failures:
-                        status_text.text(f"❌ Completed with some failures. Added {success_count} of {len(st.session_state.all_businesses)} businesses.")
-                        st.error(f"❌ Failed to add these businesses: {', '.join(failures[:5])}{' and more...' if len(failures) > 5 else ''}")
-                        logger.error(f"Failed to add these businesses: {failures}")
-                    else:
-                        status_text.text(f"✅ Completed! Successfully added all {success_count} businesses.")
-                        st.balloons()
-                        st.success(f"✅ Successfully added {success_count} businesses to your CRM!")
+                    # get_businesses should ideally log errors internally, but show UI message too
+                    st.error("An error occurred during the business search process. Please check logs.")
+                    st.session_state.all_businesses = [] # Ensure it's an empty list on error
 
             except Exception as e:
-                st.error(f"⚠️ An error occurred while saving to Google Sheets: {str(e)}")
-                logger.error(f"Error while saving to Google Sheets: {str(e)}")
+                # Catch unexpected errors during the call
+                st.error(f"An unexpected error occurred: {e}")
+                logger.error(f"Unexpected error calling get_businesses: {e}", exc_info=True)
+                st.session_state.all_businesses = [] # Ensure empty list on major error
 
+# ==============================================================================
+# END OF UPDATED UI and Button Logic for TAB 1
+# ==============================================================================
+
+# (The code for the preview table and "Save" button follows this)
+# if "all_businesses" in st.session_state and st.session_state.all_businesses:
+#    ... (rest of your code for tab1, then tab2, tab3) ...
 with tab2:
     st.subheader("Failed Jobs")
     
