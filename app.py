@@ -7,12 +7,10 @@ import gspread
 import time
 import urllib.parse
 import random
-import logging # For detailed logging from our utils functions
-import pandas as pd # To display results nicely in a table
-#rom utils.pagination import fetch_places_paginated # Our new function for paginated search
-from utils.api_utils import make_api_request_with_retry, PLACES_API_ENDPOINT_DETAILS # For the modified get_place_details
+import logging  # For detailed logging from our utils functions
+import pandas as pd  # To display results nicely in a table
+from utils.api_utils import make_api_request_with_retry, PLACES_API_ENDPOINT_DETAILS  # For the modified get_place_details
 from utils.radius_utils import generate_grid_points, perform_grid_search
-#rom app import safe_request # Make sure your safe_request is importable if needed, or defined globally
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -31,10 +29,19 @@ except ImportError:
     HAVE_STQDM = False
     logger.info("stqdm not installed. Using standard progress tracking.")
 
-# Load API keys from .env file
+# Load API keys from .env file (with fallback to Streamlit secrets)
 load_dotenv()
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
 SPREADSHEET_NAME = st.secrets.get("SPREADSHEET_NAME", os.getenv("SPREADSHEET_NAME", "Leads"))
+
+# Log whether keys were loaded
+logger.info(f"GOOGLE_API_KEY loaded: {'Yes' if GOOGLE_API_KEY else 'No'}")
+logger.info(f"SPREADSHEET_NAME: {SPREADSHEET_NAME}")
+
+# Stop app early if key is missing
+if not GOOGLE_API_KEY:
+    st.error("❌ Google API Key not loaded. Please check your `.env` file or Streamlit `secrets.toml` and restart the app.")
+    st.stop()
 
 # FIX #6: Use setdefault to ensure session state variables exist without overwriting them
 if 'processed_businesses' not in st.session_state:
