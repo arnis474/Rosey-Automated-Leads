@@ -376,8 +376,10 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                 # processed_set = st.session_state.processed_businesses # Already got reference above
                 ids_added_this_industry_block = set()
 
-                for place in all_results_for_industry_and_variants:
-                    maps_url = place.get("url") or f"https://www.google.com/maps/place/?q=place_id:{place.get('place_id')}"
+                for place in all_results_for_industry_and_variants: 
+                    place_id = place.get("place_id")  # ✅ FIX: Assign it here
+                    maps_url = place.get("url") or f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+
                     if maps_url not in processed_set:
                         processed_set.add(maps_url)
 
@@ -386,7 +388,8 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                             details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,formatted_address,formatted_phone_number,website,opening_hours,url&key={GOOGLE_API_KEY}"
                             details_response = safe_request(details_url)
                             details = details_response.get("result", {}) if details_response else {}
-                            if not details: logger.error(f"Error fetching details for {place.get('name', 'Unknown')}")
+                            if not details:
+                                logger.error(f"Error fetching details for {place.get('name', 'Unknown')}")
                         else:
                             details = place
 
