@@ -1201,3 +1201,12 @@ with tab3:
             st.experimental_rerun()
         elif not confirm:
             st.warning("Please confirm that you want to reset the app data")
+        
+if st.button("Test Write Row"):
+    test_sheet = connect_to_google_sheets()
+    if test_sheet:
+        try:
+            test_sheet.append_row(["Test", "Row", "Write", "✅"])
+            st.success("✅ Test row written successfully!")
+        except Exception as e:
+            st.error(f"❌ Test write failed: {e}")
