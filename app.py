@@ -31,8 +31,8 @@ except ImportError:
 
 # Load API keys from .env file (with fallback to Streamlit secrets)
 load_dotenv()
-GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
-SPREADSHEET_NAME = st.secrets.get("SPREADSHEET_NAME", os.getenv("SPREADSHEET_NAME", "Leads"))
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Leads")
 
 # Log whether keys were loaded
 logger.info(f"GOOGLE_API_KEY loaded: {'Yes' if GOOGLE_API_KEY else 'No'}")
