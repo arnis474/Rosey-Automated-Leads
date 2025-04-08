@@ -16,6 +16,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
+from pathlib import Path  # NEW: to help resolve .env path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,12 +30,16 @@ except ImportError:
     HAVE_STQDM = False
     logger.info("stqdm not installed. Using standard progress tracking.")
 
-# Load API keys from .env file (with fallback to Streamlit secrets)
-load_dotenv()
+# --- Updated .env loading ---
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Leads")
 
-print("GOOGLE_API_KEY from os:", os.getenv("GOOGLE_API_KEY"))
+# Debugging output to confirm values loaded correctly
+print("ENV file loaded from:", env_path)
+print("GOOGLE_API_KEY:", GOOGLE_API_KEY)
 
 # Log whether keys were loaded
 logger.info(f"GOOGLE_API_KEY loaded: {'Yes' if GOOGLE_API_KEY else 'No'}")
@@ -45,7 +50,7 @@ if not GOOGLE_API_KEY:
     st.error("❌ Google API Key not loaded. Please check your `.env` file or Streamlit `secrets.toml` and restart the app.")
     st.stop()
 
-# FIX #6: Use setdefault to ensure session state variables exist without overwriting them
+# Ensure session state variables are initialized
 if 'processed_businesses' not in st.session_state:
     st.session_state.processed_businesses = set()
 
