@@ -416,8 +416,6 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
 
                             # Optional (auto-managed columns)
                             "assigned_to": assigned_to,  # Set from UI
-                            "lead_score": "",            # Empty for sheet formulas
-                            "lead_quality": "",          # Empty for sheet formulas
                             "contact_method": "",        # Empty for sheet formulas
                             "contact_outcome": "❌ Not Contacted",  # Default outcome
                             "notes": "",
