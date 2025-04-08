@@ -233,8 +233,7 @@ def get_businesses(industries, search_target, grid_cell_radius_km, region=None):
                      query_text = f"{current_keyword} in {location}" + (f" {region}" if region else "")
                      encoded_query = urllib.parse.quote_plus(query_text)
 
-                fields = "place_id,name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
-                url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}"
+                url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}"
 
                 # --- Pagination Logic ---
                 all_page_results = [] # Results for THIS keyword's paginated/grid search
