@@ -99,28 +99,47 @@ def safe_request(url, retries=3, initial_delay=1, max_delay=15):
     return None
 
 def safe_append(sheet, row_data, business_name, retries=3, initial_delay=1, max_delay=15):
-    """Attempts to append a row with retries in case of an API error."""
+    """Attempts to append a row with retries in case of an API error or unknown failure."""
+
     for attempt in range(retries):
         try:
+            # Basic validation of row before sending
+            if not isinstance(row_data, list):
+                raise ValueError(f"Row data is not a list: {row_data}")
+
+            if any(isinstance(cell, (dict, list)) for cell in row_data):
+                raise ValueError(f"Row contains invalid nested types: {row_data}")
+
+            logger.info(f"Attempting to append row {attempt+1}/{retries}: {row_data}")
             sheet.append_row(row_data)
-            logger.info(f"Successfully added {business_name} to Google Sheets.")
+            logger.info(f"✅ Successfully added '{business_name}' to Google Sheets.")
             return True
+
         except gspread.exceptions.APIError as e:
             backoff_delay = min(initial_delay * (2 ** attempt), max_delay)
-            # FIX #3: Add jitter to prevent synchronized retries
-            backoff_delay = backoff_delay * (0.8 + 0.4 * random.random())
-            error_details = f"Error type: {type(e).__name__}, Error message: {str(e)}"
-            logger.warning(f"Google Sheets API Error when adding {business_name}. {error_details}. Retrying in {backoff_delay:.2f} seconds ({attempt+1}/{retries})...")
+            backoff_delay *= (0.8 + 0.4 * random.random())  # Jitter
+            logger.warning(f"🔁 Google Sheets API Error [{attempt+1}/{retries}] for '{business_name}': {e}. Retrying in {backoff_delay:.2f}s")
             time.sleep(backoff_delay)
-    
-    logger.error(f"Failed to add {business_name} to Google Sheets after {retries} attempts.")
-    # Store failed row in session state for potential retry
+
+        except ValueError as ve:
+            logger.error(f"❌ Format error for '{business_name}': {ve}")
+            break  # No point retrying if format is invalid
+
+        except Exception as e:
+            backoff_delay = min(initial_delay * (2 ** attempt), max_delay)
+            backoff_delay *= (0.8 + 0.4 * random.random())
+            logger.error(f"❌ Unexpected error [{attempt+1}/{retries}] for '{business_name}': {e}")
+            time.sleep(backoff_delay)
+
+    # Log total failure
+    logger.error(f"❌ Failed to add '{business_name}' after {retries} attempts.")
+
+    # Store failed row for retry later
     st.session_state.failed_rows.append((row_data, business_name))
-    
-    # FIX #5: Save failed rows to local file for persistence across app restarts
     save_failed_rows_to_file()
-    
+
     return False
+
 
 # FIX #5: Add functions to save and load failed rows from file
 def save_failed_rows_to_file():
