@@ -16,8 +16,9 @@ load_dotenv()
 
 # --- Load API key from Streamlit secrets OR fallback to environment variable ---
 GOOGLE_PLACES_API_KEY = (
-    st.secrets.get("GOOGLE_API_KEY", None) or
-    os.getenv("GOOGLE_API_KEY")
+    st.secrets.get("google_api_key", {}).get("key")  # Correct structure for secrets.toml
+    if "google_api_key" in st.secrets
+    else os.getenv("GOOGLE_API_KEY")
 )
 
 # --- Handle missing API key ---
@@ -28,6 +29,7 @@ if not GOOGLE_PLACES_API_KEY:
 # --- Google Places API Constants ---
 PLACES_API_ENDPOINT_NEARBY = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 PLACES_API_ENDPOINT_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json"
+PLACES_API_ENDPOINT_TEXT_SEARCH = "https://maps.googleapis.com/maps/api/place/textsearch/json"  # ✅ Add this if used elsewhere
 MAX_RETRIES = 5
 INITIAL_BACKOFF_SECONDS = 1
 MAX_BACKOFF_SECONDS = 32
@@ -76,9 +78,9 @@ def make_api_request_with_retry(params, endpoint_url=PLACES_API_ENDPOINT_NEARBY)
                 logging.error(f"Message: {data.get('error_message')}")
                 return None
             elif status == 'UNKNOWN_ERROR':
-                logging.warning(f"Unknown error. Will retry...")
+                logging.warning("❓ Unknown error. Will retry...")
             else:
-                logging.error(f"Unexpected status: {status}. Full response: {data}")
+                logging.error(f"❓ Unexpected status: {status}. Full response: {data}")
 
         except requests.exceptions.Timeout:
             logging.warning(f"⏱️ Timeout on attempt {attempt+1}. Retrying in {current_backoff}s...")
