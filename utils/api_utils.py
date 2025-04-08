@@ -5,23 +5,27 @@ import time
 import random
 import logging
 import streamlit as st
-import os  # For .env fallback
+import os
+from dotenv import load_dotenv
 
-# Configure logging
+# --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Constants ---
-# Load API key from secrets.toml OR .env OR default
+# --- Load from .env if available ---
+load_dotenv()
+
+# --- Load API key from Streamlit secrets OR fallback to environment variable ---
 GOOGLE_PLACES_API_KEY = (
-    st.secrets.get("GOOGLE_API_KEY") or
-    os.getenv("GOOGLE_API_KEY") or
-    None
+    st.secrets.get("GOOGLE_API_KEY", None) or
+    os.getenv("GOOGLE_API_KEY")
 )
 
+# --- Handle missing API key ---
 if not GOOGLE_PLACES_API_KEY:
-    st.error("Google API Key not found in Streamlit secrets or environment. Please add it.")
+    st.error("❌ Google API Key not found. Please add it to `.env` or `secrets.toml`.")
     logging.error("Google Places API Key is missing. Cannot proceed with API requests.")
 
+# --- Google Places API Constants ---
 PLACES_API_ENDPOINT_NEARBY = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 PLACES_API_ENDPOINT_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json"
 MAX_RETRIES = 5
@@ -41,7 +45,7 @@ def make_api_request_with_retry(params, endpoint_url=PLACES_API_ENDPOINT_NEARBY)
         dict: The JSON response from the API, or None if all retries fail or key is missing.
     """
     if not GOOGLE_PLACES_API_KEY:
-        logging.error("Google API Key is not available. Cannot make API request.")
+        logging.error("❌ Google API Key not available. Aborting request.")
         return None
 
     request_params = params.copy()
@@ -52,45 +56,43 @@ def make_api_request_with_retry(params, endpoint_url=PLACES_API_ENDPOINT_NEARBY)
         try:
             response = requests.get(endpoint_url, params=request_params, timeout=15)
             response.raise_for_status()
-
             data = response.json()
             status = data.get('status')
 
             if status == 'OK':
-                logging.info(f"API request successful (Status: OK) for endpoint: {endpoint_url}, params: {params.get('pagetoken', 'Initial Query')}")
+                logging.info(f"✅ Success on attempt {attempt+1}")
                 return data
             elif status == 'ZERO_RESULTS':
-                logging.info(f"API returned ZERO_RESULTS for endpoint: {endpoint_url}, params: {params.get('pagetoken', 'Initial Query')}")
+                logging.info(f"ℹ️ Zero results for params: {params}")
                 return data
             elif status == 'OVER_QUERY_LIMIT':
-                logging.warning(f"API Error Status: {status}. Attempt {attempt + 1}/{MAX_RETRIES}. Retrying in {current_backoff:.2f}s...")
+                logging.warning(f"⚠️ Over query limit. Backing off ({current_backoff}s)...")
             elif status == 'INVALID_REQUEST':
-                logging.error(f"API returned INVALID_REQUEST. Check parameters for endpoint {endpoint_url}: {params}")
-                logging.error(f"Error message: {data.get('error_message', 'No error message provided.')}")
+                logging.error(f"❌ Invalid request. Params: {params}")
+                logging.error(f"Message: {data.get('error_message')}")
                 return None
-            elif status in ['REQUEST_DENIED', 'UNKNOWN_ERROR']:
-                logging.error(f"API Error Status: {status} for endpoint {endpoint_url}. Params: {params}")
-                logging.error(f"Error message: {data.get('error_message', 'No error message provided.')}")
-                if status == 'REQUEST_DENIED':
-                    return None
+            elif status == 'REQUEST_DENIED':
+                logging.error(f"❌ Request denied. API key issue or API not enabled. Params: {params}")
+                logging.error(f"Message: {data.get('error_message')}")
+                return None
+            elif status == 'UNKNOWN_ERROR':
+                logging.warning(f"Unknown error. Will retry...")
             else:
-                logging.error(f"Unexpected API Status: {status} for endpoint {endpoint_url}. Params: {params}")
+                logging.error(f"Unexpected status: {status}. Full response: {data}")
 
-        except requests.exceptions.Timeout as e:
-            logging.warning(f"Request timed out. Attempt {attempt + 1}/{MAX_RETRIES}. Retrying in {current_backoff:.2f}s... Error: {e}")
-        except requests.exceptions.HTTPError as e:
-            logging.error(f"HTTP error occurred: {e}. Status Code: {e.response.status_code}. Attempt {attempt + 1}/{MAX_RETRIES}.")
+        except requests.exceptions.Timeout:
+            logging.warning(f"⏱️ Timeout on attempt {attempt+1}. Retrying in {current_backoff}s...")
         except requests.exceptions.RequestException as e:
-            logging.error(f"Network error during API request. Attempt {attempt + 1}/{MAX_RETRIES}. Retrying in {current_backoff:.2f}s... Error: {e}")
+            logging.error(f"📡 Network error: {e}. Retrying in {current_backoff}s...")
 
+        # Backoff before retrying
         if attempt < MAX_RETRIES - 1:
             jitter = current_backoff * 0.4 * (random.random() - 0.5)
             sleep_time = max(0.1, current_backoff + jitter)
-            logging.info(f"   Sleeping for {sleep_time:.2f} seconds...")
             time.sleep(sleep_time)
             current_backoff = min(current_backoff * 2, MAX_BACKOFF_SECONDS)
         else:
-            logging.error(f"API request failed after {MAX_RETRIES} attempts for endpoint {endpoint_url}, params: {params}.")
+            logging.error("❌ Max retries reached. Request failed.")
             return None
 
     return None
