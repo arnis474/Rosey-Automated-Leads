@@ -5,9 +5,12 @@ import os
 import re
 import gspread
 import time
-import logging
 import urllib.parse
 import random
+import logging # For detailed logging from our utils functions
+import pandas as pd # To display results nicely in a table
+from utils.pagination import fetch_places_paginated # Our new function for paginated search
+from utils.api_utils import make_api_request_with_retry, PLACES_API_ENDPOINT_DETAILS # For the modified get_place_details
 from google.oauth2.credentials import Credentials
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -153,18 +156,68 @@ def get_businesses(industries, locations, region):
             fields = "place_id,name,formatted_address,rating,opening_hours,formatted_phone_number,website,url"
             url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}"
             
-            data = safe_request(url)
             
+            # url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?query={encoded_query}&key={GOOGLE_API_KEY}&fields={fields}" # Line ~187
+
+            # --- Pagination Integration START ---
+            all_page_results = [] # List to hold results from all pages
+            current_page = 0
+            MAX_PAGES_TO_FETCH = 3 # Fetch initial page + 2 more (max 60 results)
+            next_page_token = None
+
+            # Initial request (Page 1)
+            logger.info(f"Fetching page {current_page + 1} for '{industry}' in '{location}'...")
+            current_url = url # Use the originally constructed URL for the first request
+            data = safe_request(current_url) # Call your existing safe_request
+
             if data is None:
-                st.error(f"Error fetching data for {industry} in {location}")
-                continue
-            
-            # FIX #9: Simplify checking for results
-            if data.get("results"):
-                # Use session state as a set for efficient lookup
-                processed_set = st.session_state.processed_businesses
+                st.error(f"Initial API request failed for {industry} in {location}. Skipping.")
+                logger.error(f"Initial safe_request failed for URL: {current_url}")
+                continue # Skip to the next industry/location
+
+            # Process initial results and get first token
+            page_results = data.get("results", [])
+            all_page_results.extend(page_results)
+            next_page_token = data.get("next_page_token")
+            current_page += 1
+            logger.info(f"Page 1: Found {len(page_results)} results. next_page_token: {'Yes' if next_page_token else 'No'}")
+
+            # Loop for subsequent pages (Pages 2 and 3)
+            while next_page_token and current_page < MAX_PAGES_TO_FETCH:
+                logger.info(f"Found next_page_token. Waiting 2 seconds before fetching page {current_page + 1}...")
+                time.sleep(2) # IMPORTANT: Wait before using the token
+
+                # Construct URL for the next page request (Text Search requires only token and key)
+                next_page_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken={next_page_token}&key={GOOGLE_API_KEY}"
+
+                logger.info(f"Fetching page {current_page + 1}...")
+                data = safe_request(next_page_url) # Call your existing safe_request
+
+                if data is None:
+                    st.warning(f"API request failed for page {current_page + 1} (token: {next_page_token}). Proceeding with results gathered so far.")
+                    logger.error(f"safe_request failed for pagination URL: {next_page_url}")
+                    break # Stop pagination if a page fails
+
+                page_results = data.get("results", [])
+                all_page_results.extend(page_results)
+                next_page_token = data.get("next_page_token") # Get token for the *next* page
+                current_page += 1
+                logger.info(f"Page {current_page}: Found {len(page_results)} results. next_page_token: {'Yes' if next_page_token else 'No'}")
+
+                # Optional safety break if API keeps giving tokens but no results
+                if not page_results and next_page_token:
+                    logger.warning("Received next_page_token but no results, stopping pagination.")
+                    break
+
+            logger.info(f"Finished pagination for '{industry}' in '{location}'. Total potential results: {len(all_page_results)}")
+            # --- Pagination Integration END ---
+
+
+            # Now process the combined results from all pages
+            if all_page_results: # Check if the combined list has results
+                processed_set = st.session_state.processed_businesses # Get the set for deduplication checks
                 
-                for place in data["results"]:
+                for place in all_page_results: # Loop through combined results from all pages
                     # Skip if we've already processed this place
                     place_id = place.get('place_id', '')
                     if place_id in processed_set:
