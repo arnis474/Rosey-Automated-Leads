@@ -929,173 +929,170 @@ tab1, tab2, tab3 = st.tabs(["Search Businesses", "Failed Jobs", "App Settings"])
 # ==============================================================================
 with tab1:
     st.subheader("1. Select Industry")
-    # --- Industry Selection ---
     col1_industry, col2_industry_multi = st.columns([1, 2])
     with col1_industry:
         selected_category = st.selectbox(
             "Select Industry Category",
             list(industry_categories.keys()),
-            key="industry_category_selector" # Added key
+            key="industry_category_selector"
         )
     with col2_industry_multi:
-        # Ensure the category exists before trying to access it
         if selected_category in industry_categories:
             selected_industries = st.multiselect(
                 f"Select Specific Industries in '{selected_category}'",
                 industry_categories[selected_category],
-                key="industry_multiselect" # Added key
+                key="industry_multiselect"
             )
         else:
             st.error("Selected category not found in configuration.")
-            selected_industries = [] # Default to empty list if category invalid
+            selected_industries = []
 
-    st.divider() # Visual separator
+    st.divider()
 
     st.subheader("2. Select Location")
-    # --- Location Input Method ---
     location_input_method = st.radio(
         "Location Input Method:",
         ["Select Location from Lists", "Enter Location Manually"],
-        key="location_input_mode", # Added key
+        key="location_input_mode",
         horizontal=True
     )
 
-    # Initialize variables to store selections/input
     locations_from_list = []
     region_from_list = None
     manual_location_input_str = ""
 
-    # --- Conditional Location Input Widgets ---
     if location_input_method == "Select Location from Lists":
         col1_region, col2_location_multi = st.columns([1, 2])
         with col1_region:
             region_from_list = st.selectbox(
                 "Select Region",
                 list(regions.keys()),
-                key="region_selector" # Added key
+                key="region_selector"
             )
         with col2_location_multi:
-            if region_from_list and region_from_list in regions: # Check region validity
+            if region_from_list in regions:
                 available_locations = regions[region_from_list]
                 locations_from_list = st.multiselect(
                     f"Select Locations in '{region_from_list}'",
                     available_locations,
-                    key="location_multiselect" # Added key
+                    key="location_multiselect"
                 )
             elif region_from_list:
-                 st.warning(f"Region '{region_from_list}' not found in configuration.")
+                st.warning(f"Region '{region_from_list}' not found.")
             else:
                 st.info("Select a region to see available locations.")
 
     elif location_input_method == "Enter Location Manually":
         manual_location_input_str = st.text_input(
             "Enter Location (e.g., 'Temple Bar, Dublin', 'London Eye', 'BT35 8PE')",
-            key="manual_location_input", # Added key
+            key="manual_location_input",
             placeholder="Type a place, neighborhood, address, or postcode..."
         )
 
     st.divider()
 
     st.subheader("3. Configure Search Options")
-    # --- Radius Slider ---
     grid_cell_radius_km = st.slider(
         "Grid Search Cell Radius (km) - Smaller radius finds more in dense areas but uses more API calls",
-        min_value=0.2,  # Min 200m
-        max_value=5.0,  # Max 5km
-        value=1.0,      # Default 1km
+        min_value=0.2,
+        max_value=5.0,
+        value=1.0,
         step=0.1,
-        key="grid_radius_slider" # Added key
+        key="grid_radius_slider"
     )
-    st.caption(f"Selected grid cell radius: {grid_cell_radius_km * 1000:.0f} meters. This is only used if the initial search finds fewer than ~55 results.")
+    st.caption(f"Selected grid cell radius: {grid_cell_radius_km * 1000:.0f} meters.")
 
-    # --- Team Member Assignment ---
     assigned_to = st.selectbox(
         "Assign Found Leads to Team Member",
-         # Check team_members exists and has items
         team_members if 'team_members' in globals() and team_members else ["Default"],
-        key="assignee_selector" # Added key
-        )
-    # Note: 'assigned_to' is read here but used later during the saving process.
+        key="assignee_selector"
+    )
 
     st.divider()
     st.subheader("4. Start Search")
 
-    # --- "Find Businesses" Button and Logic ---
     if st.button("Find Businesses"):
 
-        # --- Read Inputs based on Mode (Using widget keys) ---
         current_selected_industries = st.session_state.get("industry_multiselect", [])
-
         input_mode = st.session_state.get("location_input_mode", "Select Location from Lists")
-        search_target = None # Will hold list from multiselect or string from text input
-        region_context = None # Will hold region string if using list mode
+        search_target = None
+        region_context = None
 
-        # Get location input based on mode
         if input_mode == "Select Location from Lists":
             search_target = st.session_state.get("location_multiselect", [])
             region_context = st.session_state.get("region_selector")
-            # Validation for list mode
             if not search_target:
-                st.error("Please select at least one location from the list.")
+                st.error("Please select at least one location.")
                 st.stop()
             if not region_context:
                 st.error("Please select a region.")
                 st.stop()
             logger.info(f"Starting search. Mode: List. Locations: {search_target}, Region: {region_context}")
-
         elif input_mode == "Enter Location Manually":
             search_target = st.session_state.get("manual_location_input", "").strip()
-            # Validation for manual mode
             if not search_target:
                 st.error("Please enter a location manually.")
                 st.stop()
-            # region_context remains None
             logger.info(f"Starting search. Mode: Manual. Location: '{search_target}'")
 
-        # Get radius from slider (using key)
         grid_radius_value_km = st.session_state.get("grid_radius_slider", 1.0)
 
-        # --- General Validation (API Key and Industry) ---
         if not GOOGLE_API_KEY:
-            st.error("Google API Key not found. Please check your .env file.")
+            st.error("Google API Key not found.")
             st.stop()
         if not current_selected_industries:
             st.error("Please select at least one industry.")
             st.stop()
 
-        # --- Call get_businesses (Pass new parameters) ---
-        st.info(f"Fetching businesses for '{', '.join(current_selected_industries)}'...") # User feedback
-        with st.spinner("Fetching businesses... This may take a while, especially if grid search is triggered."):
+        st.info(f"Fetching businesses for '{', '.join(current_selected_industries)}'...")
+        with st.spinner("Fetching businesses... This may take a while..."):
             try:
-                # Call get_businesses with the arguments reflecting the new UI options
-                # The get_businesses function itself still needs modification (Next Step)
                 all_businesses = get_businesses(
                     industries=current_selected_industries,
-                    search_target=search_target, # This is either the list or the string
-                    grid_cell_radius_km=grid_radius_value_km, # Pass the value from the slider
-                    region=region_context # Pass the region string (or None if manual mode)
+                    search_target=search_target,
+                    grid_cell_radius_km=grid_radius_value_km,
+                    region=region_context
                 )
 
-                # --- Process Results (Remains the same as your original code) ---
-                if all_businesses is not None: # Check if function returned list (even empty) or None (error)
-                    st.success(f"Search complete! Found {len(all_businesses)} unique businesses.")
+                if all_businesses is not None:
+                    st.success(f"Found {len(all_businesses)} unique businesses.")
                     logger.info(f"get_businesses returned {len(all_businesses)} businesses.")
-                    # Store results in session state for display/saving
                     st.session_state.all_businesses = all_businesses
                 else:
-                    # get_businesses should ideally log errors internally, but show UI message too
-                    st.error("An error occurred during the business search process. Please check logs.")
-                    st.session_state.all_businesses = [] # Ensure it's an empty list on error
+                    st.error("An error occurred during the business search process.")
+                    st.session_state.all_businesses = []
 
             except Exception as e:
-                # Catch unexpected errors during the call
                 st.error(f"An unexpected error occurred: {e}")
                 logger.error(f"Unexpected error calling get_businesses: {e}", exc_info=True)
-                st.session_state.all_businesses = [] # Ensure empty list on major error
+                st.session_state.all_businesses = []
 
-# ==============================================================================
-# END OF UPDATED UI and Button Logic for TAB 1
-# ==============================================================================
+    # ===============================
+    # 5. Show Results + Save Button
+    # ===============================
+    if "all_businesses" in st.session_state and st.session_state.all_businesses:
+        st.divider()
+        st.subheader("5. Preview Results")
+
+        df = pd.DataFrame(st.session_state.all_businesses)
+        st.dataframe(df, use_container_width=True)
+
+        if st.button("Save Results to Google Sheets"):
+            sheet = connect_to_google_sheets()
+            if sheet:
+                successes = 0
+                total = len(st.session_state.all_businesses)
+                iterator = stqdm(st.session_state.all_businesses) if HAVE_STQDM else st.session_state.all_businesses
+
+                for row in iterator:
+                    row_data = list(row.values()) + [assigned_to]
+                    business_name = row.get("name", "Unknown")
+                    if safe_append(sheet, row_data, business_name):
+                        successes += 1
+
+                st.success(f"✅ Successfully saved {successes} of {total} businesses to Google Sheets.")
+            else:
+                st.error("❌ Failed to connect to Google Sheets. Check authentication setup.")
 
 # (The code for the preview table and "Save" button follows this)
 # if "all_businesses" in st.session_state and st.session_state.all_businesses:
