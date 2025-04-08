@@ -34,7 +34,7 @@ except ImportError:
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or "AIzaSyAsM1m80IgYQ-042GdiwhnlWg025j-ozg0"
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Leads")
 
 # Debugging output to confirm values loaded correctly
