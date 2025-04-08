@@ -10,6 +10,7 @@ import random
 import logging  # For detailed logging from our utils functions
 import pandas as pd  # To display results nicely in a table
 from utils.api_utils import make_api_request_with_retry, PLACES_API_ENDPOINT_DETAILS  # For the modified get_place_details
+from utils.google_utils import get_coordinates
 from utils.radius_utils import generate_grid_points, perform_grid_search
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
