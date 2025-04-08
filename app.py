@@ -34,6 +34,8 @@ load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Leads")
 
+print("GOOGLE_API_KEY from os:", os.getenv("GOOGLE_API_KEY"))
+
 # Log whether keys were loaded
 logger.info(f"GOOGLE_API_KEY loaded: {'Yes' if GOOGLE_API_KEY else 'No'}")
 logger.info(f"SPREADSHEET_NAME: {SPREADSHEET_NAME}")
