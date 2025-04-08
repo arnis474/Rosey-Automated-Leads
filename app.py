@@ -1129,7 +1129,7 @@ if "all_businesses" in st.session_state and st.session_state.all_businesses:
                 total = len(st.session_state.all_businesses)
 
                 for i, row in enumerate(st.session_state.all_businesses):
-                    row_data = list(row.values()) + [assigned_to]
+                    row_data = list(row.values())
                     business_name = row.get("name", "Unknown")
 
                     status_text.text(f"Saving {i+1}/{total}: {business_name}")
