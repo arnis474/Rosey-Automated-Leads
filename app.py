@@ -1067,31 +1067,32 @@ with tab1:
                 logger.error(f"Unexpected error calling get_businesses: {e}", exc_info=True)
                 st.session_state.all_businesses = []
 
-    # ===============================
-    # 5. Show Results + Save Button
-    # ===============================
-    if "all_businesses" in st.session_state and st.session_state.all_businesses:
-        st.divider()
-        st.subheader("5. Preview Results")
+# =============================== 
+# 5. Show Results + Save Button
+# ===============================
+if "all_businesses" in st.session_state and st.session_state.all_businesses:
+    st.divider()
+    st.subheader("5. Preview Results")
 
-        df = pd.DataFrame(st.session_state.all_businesses)
-        st.dataframe(df, use_container_width=True)
+    df = pd.DataFrame(st.session_state.all_businesses)
+    st.dataframe(df, use_container_width=True)
 
-        if st.button("Save Results to Google Sheets"):
+    if st.button("Save Results to Google Sheets"):
+        with st.spinner("Saving to Google Sheets..."):
             sheet = connect_to_google_sheets()
             if sheet:
-                # Check if sheet is empty, add header row
+                # Check and add header if missing
                 try:
-                    if not sheet.get_all_values():  # No rows in sheet
+                    if not sheet.get_all_values():  # Sheet is empty
                         headers = list(df.columns) + ["Assigned To"]
                         sheet.append_row(headers)
-                        logger.info("Added header row to empty Google Sheet.")
+                        logger.info("✅ Header row added to Google Sheet.")
                 except Exception as e:
-                    st.error(f"Failed to verify or create headers: {e}")
-                    logger.error(f"Header check failed: {e}")
+                    st.error(f"❌ Failed to verify or create headers: {e}")
+                    logger.error(f"Header row check failed: {e}")
                     st.stop()
 
-                # Progress setup
+                # Saving each row with progress
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 success_count = 0
@@ -1102,10 +1103,13 @@ with tab1:
                     business_name = row.get("name", "Unknown")
 
                     status_text.text(f"Saving {i+1}/{total}: {business_name}")
-                    progress_bar.progress((i+1)/total)
+                    progress_bar.progress((i + 1) / total)
 
-                    if safe_append(sheet, row_data, business_name):
+                    success = safe_append(sheet, row_data, business_name)
+                    if success:
                         success_count += 1
+                    else:
+                        logger.warning(f"❌ Failed to save business: {business_name}")
 
                 progress_bar.empty()
                 status_text.empty()
@@ -1113,9 +1117,9 @@ with tab1:
                 if success_count == total:
                     st.success(f"✅ Successfully saved all {success_count} businesses to Google Sheets.")
                 else:
-                    st.warning(f"⚠️ Saved {success_count}/{total} businesses. Some failed and were added to retry queue.")
+                    st.warning(f"⚠️ Saved {success_count}/{total}. Some rows failed and were added to the retry list.")
             else:
-                st.error("❌ Failed to connect to Google Sheets. Check token or spreadsheet name.")
+                st.error("❌ Could not connect to Google Sheets. Please check your authentication and spreadsheet settings.")
 
 # (The code for the preview table and "Save" button follows this)
 # if "all_businesses" in st.session_state and st.session_state.all_businesses:
